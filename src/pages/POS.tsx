@@ -22,6 +22,8 @@ import {
 import { formatCurrency, cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+import EntryGate from '../components/EntryGate';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 
 const POS: React.FC = () => {
   const { currentBranch, branches, switchBranch, user, logout, activeWorkPeriod, startWorkPeriod, endWorkPeriod } = useApp();
@@ -38,6 +40,8 @@ const POS: React.FC = () => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'digital_wallet'>('cash');
   const [selectedProductForTags, setSelectedProductForTags] = useState<Product | null>(null);
+  const [isPosVisible, setIsPosVisible] = useState(true);
+  const [showScanner, setShowScanner] = useState(false);
 
   useEffect(() => {
     const unsubProducts = posService.subscribeToProducts(setProducts);
@@ -50,36 +54,44 @@ const POS: React.FC = () => {
     };
   }, []);
 
-  if (!activeWorkPeriod || activeWorkPeriod.status === 'closed') {
-    return (
-      <div className="h-screen flex flex-col items-center justify-center bg-slate-900 p-6">
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-white rounded-[40px] p-12 w-full max-w-lg text-center shadow-2xl"
-        >
-          <div className="w-24 h-24 bg-indigo-100 rounded-3xl flex items-center justify-center mx-auto mb-8">
-            <Receipt className="text-indigo-600" size={48} />
-          </div>
-          <h1 className="text-4xl font-black text-slate-800 mb-4">Work Period Required</h1>
-          <p className="text-slate-500 text-lg mb-10">
-            You must start a work period to access the POS screen. This helps track your shift and inventory changes.
-          </p>
-          <button
-            onClick={startWorkPeriod}
-            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-black py-6 rounded-3xl shadow-xl shadow-indigo-200 transition-all text-xl"
-          >
-            Start Work Period
-          </button>
-          <button 
-            onClick={logout}
-            className="mt-6 text-slate-400 font-bold hover:text-rose-500 transition-colors"
-          >
-            Switch Account
-          </button>
-        </motion.div>
-      </div>
-    );
+  useEffect(() => {
+    if (showScanner) {
+      const scanner = new Html5QrcodeScanner(
+        "reader",
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        /* verbose= */ false
+      );
+
+      scanner.render(
+        (decodedText) => {
+          // Find product by SKU
+          const product = products.find(p => p.sku === decodedText && p.branchId === currentBranch?.id);
+          if (product) {
+            handleProductClick(product);
+            toast.success(`Added ${product.name} to cart`);
+            setShowScanner(false);
+            scanner.clear();
+          } else {
+            toast.error(`Product with SKU ${decodedText} not found in this branch`);
+          }
+        },
+        (error) => {
+          // console.warn(error);
+        }
+      );
+
+      return () => {
+        scanner.clear().catch(error => console.error("Failed to clear scanner", error));
+      };
+    }
+  }, [showScanner, products, currentBranch]);
+
+  const availableBranches = user?.role === 'admin' 
+    ? branches 
+    : branches.filter(b => user?.branchIds.includes(b.id));
+
+  if (!activeWorkPeriod || activeWorkPeriod.status === 'closed' || !isPosVisible) {
+    return <EntryGate onEnter={() => setIsPosVisible(true)} />;
   }
 
   const filteredProducts = products.filter(p => {
@@ -88,7 +100,8 @@ const POS: React.FC = () => {
                          p.sku?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCategory = !selectedCategory || p.category === selectedCategory;
     const isNotPaused = !p.isPaused;
-    return matchesBranch && matchesSearch && matchesCategory && isNotPaused;
+    const isNotExpired = !p.expiryDate || new Date(p.expiryDate) > new Date();
+    return matchesBranch && matchesSearch && matchesCategory && isNotPaused && isNotExpired;
   });
 
   const addToCart = (product: Product, tags: OrderTag[] = []) => {
@@ -190,44 +203,28 @@ const POS: React.FC = () => {
             <span className="font-bold text-xl tracking-tight text-slate-800">Ace Point Of Sale</span>
           </div>
 
-          {/* Branch Selector */}
-          <div className="relative">
+          {/* Current Branch Indicator */}
+          <div className="flex items-center gap-4">
             <button 
-              onClick={() => setShowBranchMenu(!showBranchMenu)}
-              className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl transition-all text-slate-700 font-medium"
+              onClick={() => setShowScanner(true)}
+              className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors flex items-center gap-2"
+              title="Scan Barcode/QR Code"
             >
+              <Search size={20} />
+              <span className="text-sm font-bold hidden sm:inline">Scan Code</span>
+            </button>
+            <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-xl text-slate-700 font-medium">
               <Building2 size={18} className="text-indigo-600" />
               {currentBranch?.name}
-              <ChevronDown size={16} className={cn("transition-transform", showBranchMenu && "rotate-180")} />
-            </button>
-            <AnimatePresence>
-              {showBranchMenu && (
-                <motion.div
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: 10 }}
-                  className="absolute top-full left-0 mt-2 w-56 bg-white rounded-2xl shadow-xl border border-slate-100 p-2 z-50"
-                >
-                  {branches.map(branch => (
-                    <button
-                      key={branch.id}
-                      onClick={() => {
-                        switchBranch(branch);
-                        setShowBranchMenu(false);
-                        toast.info(`Switched to ${branch.name}`);
-                      }}
-                      className={cn(
-                        "w-full text-left px-4 py-3 rounded-xl transition-colors flex items-center justify-between",
-                        currentBranch?.id === branch.id ? "bg-indigo-50 text-indigo-600 font-bold" : "hover:bg-slate-50 text-slate-600"
-                      )}
-                    >
-                      {branch.name}
-                      {currentBranch?.id === branch.id && <div className="w-2 h-2 bg-indigo-600 rounded-full" />}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </div>
+            {user && user.branchIds.length > 1 && (
+              <button 
+                onClick={() => setIsPosVisible(false)}
+                className="text-xs font-bold text-indigo-600 hover:text-indigo-700 underline underline-offset-4"
+              >
+                Switch Branch
+              </button>
+            )}
           </div>
         </div>
 
@@ -575,6 +572,43 @@ const POS: React.FC = () => {
                   Remove Selected Customer
                 </button>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Scanner Modal */}
+      <AnimatePresence>
+        {showScanner && (
+          <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-md">
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[40px] p-8 w-full max-w-lg shadow-2xl relative"
+            >
+              <button 
+                onClick={() => setShowScanner(false)}
+                className="absolute top-6 right-6 p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X size={24} />
+              </button>
+              
+              <div className="text-center mb-6">
+                <h2 className="text-2xl font-black text-slate-800">Scan Product Code</h2>
+                <p className="text-slate-500 text-sm mt-1">Place the Barcode or QR code within the frame</p>
+              </div>
+
+              <div id="reader" className="overflow-hidden rounded-3xl border-4 border-slate-100 bg-slate-50"></div>
+              
+              <div className="mt-6 p-4 bg-indigo-50 rounded-2xl flex items-start gap-3">
+                <div className="p-2 bg-white rounded-lg text-indigo-600 shadow-sm">
+                  <Search size={18} />
+                </div>
+                <p className="text-xs text-indigo-700 leading-relaxed">
+                  The scanner will automatically detect the code and add the matching product to your current order.
+                </p>
+              </div>
             </motion.div>
           </div>
         )}

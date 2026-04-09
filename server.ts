@@ -13,7 +13,8 @@ const app = express();
 const PORT = 3000;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Database setup
 let pool: any = null;
@@ -33,7 +34,8 @@ async function initDb() {
         port: parseInt(process.env.DB_PORT || '3306'),
         waitForConnections: true,
         connectionLimit: 10,
-        queueLimit: 0
+        queueLimit: 0,
+        multipleStatements: true
       });
       // Test connection
       await pool.query("SELECT 1");
@@ -151,6 +153,22 @@ async function initDb() {
           end_time DATETIME,
           status TEXT DEFAULT 'open'
         );
+        CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          role TEXT NOT NULL,
+          phone TEXT,
+          address TEXT,
+          emp_no TEXT UNIQUE,
+          id_number TEXT,
+          username TEXT UNIQUE,
+          password TEXT,
+          joined_date TEXT,
+          branch_ids TEXT, -- JSON array of branch IDs
+          is_active INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS warehouses (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           branch_id INTEGER NOT NULL,
@@ -179,7 +197,32 @@ async function initDb() {
           user_id INTEGER NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          company_name TEXT,
+          company_trn TEXT,
+          address TEXT,
+          phone TEXT,
+          email TEXT,
+          whatsapp TEXT,
+          facebook TEXT,
+          instagram TEXT,
+          currency_name TEXT,
+          currency_sign TEXT,
+          currency_prefix INTEGER DEFAULT 1,
+          tax_percentage REAL DEFAULT 0,
+          service_charge REAL DEFAULT 0
+        );
       `);
+
+      // Insert default settings if not exists
+      const settingsCount = sqliteDb.prepare("SELECT COUNT(*) as count FROM settings").get();
+      if (settingsCount.count === 0) {
+        sqliteDb.prepare(`
+          INSERT INTO settings (id, company_name, currency_name, currency_sign, tax_percentage)
+          VALUES (1, 'Ace Point Of Sale', 'US Dollar', '$', 10)
+        `).run();
+      }
       console.log("SQLite schema initialized");
 
       // Migration for products table
@@ -217,6 +260,34 @@ async function initDb() {
         }
         if (!wColumnNames.includes('location')) {
           sqliteDb.prepare("ALTER TABLE warehouses ADD COLUMN location TEXT").run();
+        }
+
+        // Migration for users
+        const uColumns = sqliteDb.prepare("PRAGMA table_info(users)").all();
+        const uColumnNames = uColumns.map((c: any) => c.name);
+        if (!uColumnNames.includes('address')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN address TEXT").run();
+        }
+        if (!uColumnNames.includes('emp_no')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN emp_no TEXT").run();
+        }
+        if (!uColumnNames.includes('id_number')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN id_number TEXT").run();
+        }
+        if (!uColumnNames.includes('username')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN username TEXT").run();
+        }
+        if (!uColumnNames.includes('password')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN password TEXT").run();
+        }
+        if (!uColumnNames.includes('joined_date')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN joined_date TEXT").run();
+        }
+        if (!uColumnNames.includes('branch_ids')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN branch_ids TEXT").run();
+        }
+        if (!uColumnNames.includes('role')) {
+          sqliteDb.prepare("ALTER TABLE users ADD COLUMN role TEXT").run();
         }
       } catch (e) {
         console.error("Migration failed:", e);
@@ -294,6 +365,34 @@ app.all("/api/index.php", async (req, res) => {
         }
         break;
 
+      case 'settings':
+        if (method === 'GET') {
+          const [rows] = await query("SELECT * FROM settings WHERE id = 1");
+          res.json(rows[0] || {});
+        } else if (method === 'POST' || method === 'PUT') {
+          const { 
+            company_name, company_trn, address, phone, email, whatsapp, 
+            facebook, instagram, currency_name, currency_sign, 
+            currency_prefix, tax_percentage, service_charge 
+          } = req.body;
+          
+          await query(`
+            UPDATE settings SET 
+              company_name = ?, company_trn = ?, address = ?, phone = ?, 
+              email = ?, whatsapp = ?, facebook = ?, instagram = ?, 
+              currency_name = ?, currency_sign = ?, currency_prefix = ?, 
+              tax_percentage = ?, service_charge = ?
+            WHERE id = 1
+          `, [
+            company_name, company_trn, address, phone, 
+            email, whatsapp, facebook, instagram, 
+            currency_name, currency_sign, currency_prefix ? 1 : 0, 
+            tax_percentage, service_charge
+          ]);
+          res.json({ success: true });
+        }
+        break;
+
       case 'categories':
         if (method === 'GET') {
           const [rows] = await query("SELECT * FROM categories ORDER BY name");
@@ -354,11 +453,16 @@ app.all("/api/index.php", async (req, res) => {
           const { branch_id, user_id, items, total, payment_method } = req.body;
           const orderNumber = `ORD-${Date.now()}`;
           
+          // Get tax rate from settings
+          const [settingsRows] = await query("SELECT tax_percentage FROM settings WHERE id = 1");
+          const taxRate = settingsRows[0]?.tax_percentage || 10;
+          const taxFactor = 1 + (taxRate / 100);
+
           if (isUsingSqlite) {
             const transaction = sqliteDb.transaction(() => {
               const orderResult = sqliteDb.prepare(
                 "INSERT INTO orders (branch_id, user_id, order_number, subtotal, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, 'completed')"
-              ).run(branch_id, user_id, orderNumber, total / 1.08, total, payment_method);
+              ).run(branch_id, user_id, orderNumber, total / taxFactor, total, payment_method);
               
               const orderId = orderResult.lastInsertRowid;
               for (const item of items) {
@@ -380,7 +484,7 @@ app.all("/api/index.php", async (req, res) => {
               await connection.beginTransaction();
               const [orderResult] = await connection.query(
                 "INSERT INTO orders (branch_id, user_id, order_number, subtotal, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, 'completed')",
-                [branch_id, user_id, orderNumber, total / 1.08, total, payment_method]
+                [branch_id, user_id, orderNumber, total / taxFactor, total, payment_method]
               );
               const orderId = orderResult.insertId;
               for (const item of items) {
@@ -590,21 +694,407 @@ app.all("/api/index.php", async (req, res) => {
           res.json(rows);
         } else if (method === 'POST') {
           const { item_id, item_type, from_branch_id, to_branch_id, quantity, user_id } = req.body;
+          
+          const table = item_type === 'product' ? 'products' : 'inventory_items';
+          const column = item_type === 'product' ? 'stock_quantity' : 'stock';
+          
+          // 1. Get source item details
+          const [sourceItems] = await query(`SELECT * FROM ${table} WHERE id = ? AND branch_id = ?`, [item_id, from_branch_id]);
+          if (sourceItems.length === 0) {
+            return res.status(400).json({ error: "Source item not found in specified branch" });
+          }
+          const sourceItem = sourceItems[0];
+
+          // 2. Find or create destination item
+          let destItemId;
+          let destItems;
+          if (item_type === 'product') {
+            [destItems] = await query(`SELECT id FROM products WHERE branch_id = ? AND (sku = ? OR name = ?)`, [to_branch_id, sourceItem.sku, sourceItem.name]);
+          } else {
+            [destItems] = await query(`SELECT id FROM inventory_items WHERE branch_id = ? AND name = ?`, [to_branch_id, sourceItem.name]);
+          }
+
+          if (destItems.length > 0) {
+            destItemId = destItems[0].id;
+            // Update existing
+            await query(`UPDATE ${table} SET ${column} = ${column} + ? WHERE id = ?`, [quantity, destItemId]);
+          } else {
+            // Create new in destination branch
+            if (item_type === 'product') {
+              const [insertResult] = await query(
+                "INSERT INTO products (branch_id, name, price, category_id, stock_quantity, sku, image_url, expiry_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [to_branch_id, sourceItem.name, sourceItem.price, sourceItem.category_id, quantity, sourceItem.sku, sourceItem.image_url, sourceItem.expiry_date]
+              );
+              destItemId = insertResult.insertId;
+            } else {
+              const [insertResult] = await query(
+                "INSERT INTO inventory_items (branch_id, name, base_unit, cost, stock) VALUES (?, ?, ?, ?, ?)",
+                [to_branch_id, sourceItem.name, sourceItem.base_unit, sourceItem.cost, quantity]
+              );
+              destItemId = insertResult.insertId;
+            }
+          }
+
+          // 3. Deduct from source
+          await query(`UPDATE ${table} SET ${column} = ${column} - ? WHERE id = ?`, [quantity, item_id]);
+
+          // 4. Record transfer
           const [result] = await query(
             "INSERT INTO stock_transfers (item_id, item_type, from_branch_id, to_branch_id, quantity, user_id) VALUES (?, ?, ?, ?, ?, ?)",
             [item_id, item_type, from_branch_id, to_branch_id, quantity, user_id]
           );
           
-          const table = item_type === 'product' ? 'products' : 'inventory_items';
-          const column = item_type === 'product' ? 'stock_quantity' : 'stock';
-          
-          // Deduct from source
-          await query(`UPDATE ${table} SET ${column} = ${column} - ? WHERE id = ? AND branch_id = ?`, [quantity, item_id, from_branch_id]);
-          // Add to destination (this assumes the item exists in both branches, which might not be true in a real system, but for this POS it's a simplification)
-          // In a more complex system, we'd check if it exists or use a branch_inventory table.
-          await query(`UPDATE ${table} SET ${column} = ${column} + ? WHERE id = ? AND branch_id = ?`, [quantity, item_id, to_branch_id]);
-          
           res.json({ id: result.insertId });
+        }
+        break;
+
+      case 'users':
+        if (method === 'GET') {
+          const [rows] = await query("SELECT * FROM users ORDER BY name");
+          res.json(rows);
+        } else if (method === 'POST') {
+          const { name, email, role, phone, address, emp_no, id_number, username, password, joined_date, branch_ids, is_active } = req.body;
+          
+          // Check for duplicate emp_no
+          if (emp_no) {
+            const [existing] = await query("SELECT id FROM users WHERE emp_no = ?", [emp_no]);
+            if (existing.length > 0) {
+              return res.status(400).json({ error: "Employee number already exists" });
+            }
+          }
+
+          // Check for duplicate username
+          if (username) {
+            const [existing] = await query("SELECT id FROM users WHERE username = ?", [username]);
+            if (existing.length > 0) {
+              return res.status(400).json({ error: "Username already exists" });
+            }
+          }
+
+          const isActiveValue = is_active === undefined ? 1 : (is_active ? 1 : 0);
+          const [result] = await query(
+            "INSERT INTO users (name, email, role, phone, address, emp_no, id_number, username, password, joined_date, branch_ids, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [name, email, role, phone, address, emp_no, id_number, username, password, joined_date, branch_ids, isActiveValue]
+          );
+          res.json({ id: result.insertId });
+        }
+        break;
+
+      case 'update_user':
+        if (method === 'PUT' || method === 'POST') {
+          const id = req.query.id;
+          const { name, email, role, phone, address, emp_no, id_number, username, password, joined_date, branch_ids, is_active } = req.body;
+          
+          // Check for duplicate emp_no
+          if (emp_no) {
+            const [existing] = await query("SELECT id FROM users WHERE emp_no = ? AND id != ?", [emp_no, id]);
+            if (existing.length > 0) {
+              return res.status(400).json({ error: "Employee number already exists" });
+            }
+          }
+
+          // Check for duplicate username
+          if (username) {
+            const [existing] = await query("SELECT id FROM users WHERE username = ? AND id != ?", [username, id]);
+            if (existing.length > 0) {
+              return res.status(400).json({ error: "Username already exists" });
+            }
+          }
+
+          // Get current user to handle partial updates if needed, but here we just handle is_active default
+          const [currentUsers] = await query("SELECT * FROM users WHERE id = ?", [id]);
+          if (currentUsers.length === 0) return res.status(404).json({ error: "User not found" });
+          const currentUser = currentUsers[0];
+
+          const isActiveValue = is_active === undefined ? currentUser.is_active : (is_active ? 1 : 0);
+
+          await query(
+            "UPDATE users SET name = ?, email = ?, role = ?, phone = ?, address = ?, emp_no = ?, id_number = ?, username = ?, password = ?, joined_date = ?, branch_ids = ?, is_active = ? WHERE id = ?",
+            [
+              name !== undefined ? name : currentUser.name,
+              email !== undefined ? email : currentUser.email,
+              role !== undefined ? role : currentUser.role,
+              phone !== undefined ? phone : currentUser.phone,
+              address !== undefined ? address : currentUser.address,
+              emp_no !== undefined ? emp_no : currentUser.emp_no,
+              id_number !== undefined ? id_number : currentUser.id_number,
+              username !== undefined ? username : currentUser.username,
+              password !== undefined ? password : currentUser.password,
+              joined_date !== undefined ? joined_date : currentUser.joined_date,
+              branch_ids !== undefined ? branch_ids : currentUser.branch_ids,
+              isActiveValue,
+              id
+            ]
+          );
+          res.json({ success: true });
+        }
+        break;
+
+      case 'delete_user':
+        if (method === 'DELETE' || method === 'POST') {
+          const id = req.query.id;
+          await query("DELETE FROM users WHERE id = ?", [id]);
+          res.json({ success: true });
+        }
+        break;
+
+      case 'login':
+        if (method === 'POST') {
+          const { email, password } = req.body;
+          const [rows] = await query("SELECT * FROM users WHERE email = ? AND password = ? AND is_active = 1", [email, password]);
+          if (rows.length > 0) {
+            const u = rows[0];
+            res.json({
+              id: u.id.toString(),
+              name: u.name,
+              email: u.email,
+              role: u.role,
+              branchIds: u.branch_ids ? JSON.parse(u.branch_ids) : [],
+              isActive: u.is_active === 1,
+              empNo: u.emp_no,
+              joinedDate: u.joined_date
+            });
+          } else {
+            res.status(401).json({ error: "Invalid credentials" });
+          }
+        }
+        break;
+
+      case 'export_sql':
+        if (method === 'GET') {
+          try {
+            let tables: string[] = [];
+            if (isUsingSqlite) {
+              const rows = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'sqlite_sequence'").all();
+              tables = rows.map((r: any) => r.name);
+            } else {
+              const [rows] = await pool.query("SHOW TABLES");
+              const dbName = process.env.MYSQL_DATABASE || 'pos_db';
+              tables = rows.map((r: any) => r[`Tables_in_${dbName}`] || Object.values(r)[0]);
+            }
+
+            let sqlDump = isUsingSqlite ? "PRAGMA foreign_keys = OFF;\n" : "SET FOREIGN_KEY_CHECKS = 0;\n";
+            
+            for (const table of tables) {
+              sqlDump += `\n-- Table: ${table}\n`;
+              sqlDump += `DELETE FROM \`${table}\`;\n`;
+              
+              let rows: any[] = [];
+              if (isUsingSqlite) {
+                rows = sqliteDb.prepare(`SELECT * FROM \`${table}\``).all();
+              } else {
+                const [result] = await pool.query(`SELECT * FROM \`${table}\``);
+                rows = result;
+              }
+
+              if (rows.length > 0) {
+                const keys = Object.keys(rows[0]);
+                const columns = keys.map(k => `\`${k}\``).join(', ');
+                
+                for (const row of rows) {
+                  const values = keys.map(k => {
+                    const val = row[k];
+                    if (val === null) return 'NULL';
+                    if (typeof val === 'string') return `'${val.replace(/'/g, "''")}'`;
+                    if (val instanceof Date) return `'${val.toISOString().slice(0, 19).replace('T', ' ')}'`;
+                    return val;
+                  }).join(', ');
+                  sqlDump += `INSERT INTO \`${table}\` (${columns}) VALUES (${values});\n`;
+                }
+              }
+            }
+
+            sqlDump += isUsingSqlite ? "\nPRAGMA foreign_keys = ON;" : "\nSET FOREIGN_KEY_CHECKS = 1;";
+            sqlDump += "\n-- END OF BACKUP --";
+            res.setHeader('Content-Type', 'text/plain');
+            res.send(sqlDump);
+          } catch (error) {
+            console.error("SQL Export failed:", error);
+            res.status(500).json({ error: "SQL Export failed: " + String(error) });
+          }
+        }
+        break;
+
+      case 'import_sql':
+        if (method === 'POST') {
+          const { sql } = req.body;
+          if (!sql) return res.status(400).json({ error: "No SQL provided" });
+          
+          if (!sql.includes("-- END OF BACKUP --")) {
+            return res.status(400).json({ error: "The backup file appears to be incomplete or truncated. Please try generating a new backup." });
+          }
+
+          let connection: any = null;
+          try {
+            if (isUsingSqlite) {
+              sqliteDb.exec(sql);
+            } else {
+              connection = await pool.getConnection();
+              await connection.query(sql);
+              connection.release();
+            }
+            res.json({ success: true });
+          } catch (error) {
+            console.error("SQL Import failed:", error);
+            if (connection) connection.release();
+            res.status(500).json({ error: "SQL Import failed: " + String(error) });
+          }
+        }
+        break;
+
+      case 'export_data':
+        if (method === 'GET') {
+          try {
+            let tables: string[] = [];
+            if (isUsingSqlite) {
+              const rows = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'sqlite_sequence'").all();
+              tables = rows.map((r: any) => r.name);
+            } else {
+              const [rows] = await pool.query("SHOW TABLES");
+              const dbName = process.env.MYSQL_DATABASE || 'pos_db';
+              tables = rows.map((r: any) => r[`Tables_in_${dbName}`] || Object.values(r)[0]);
+            }
+
+            console.log(`Exporting ${tables.length} tables: ${tables.join(', ')}`);
+            const backup: any = {};
+            for (const table of tables) {
+              if (isUsingSqlite) {
+                backup[table] = sqliteDb.prepare(`SELECT * FROM \`${table}\``).all();
+              } else {
+                const [rows] = await pool.query(`SELECT * FROM \`${table}\``);
+                backup[table] = rows;
+              }
+            }
+            backup._metadata = {
+              timestamp: new Date().toISOString(),
+              isComplete: true
+            };
+            res.json(backup);
+          } catch (error) {
+            console.error("Export failed:", error);
+            res.status(500).json({ error: "Export failed: " + String(error) });
+          }
+        }
+        break;
+
+      case 'import_data':
+        if (method === 'POST') {
+          const backup = req.body;
+          if (!backup || typeof backup !== 'object') {
+            return res.status(400).json({ error: "Invalid backup data" });
+          }
+          
+          if (!backup._metadata || !backup._metadata.isComplete) {
+            return res.status(400).json({ error: "The backup file appears to be incomplete or corrupted. Please try generating a new backup." });
+          }
+
+          let connection: any = null;
+          try {
+            // Get all current tables to clear them first
+            let currentTables: string[] = [];
+            if (isUsingSqlite) {
+              const rows = sqliteDb.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'sqlite_sequence'").all();
+              currentTables = rows.map((r: any) => r.name);
+            } else {
+              const [rows] = await pool.query("SHOW TABLES");
+              const dbName = process.env.MYSQL_DATABASE || 'pos_db';
+              currentTables = rows.map((r: any) => r[`Tables_in_${dbName}`] || Object.values(r)[0]);
+            }
+
+            if (isUsingSqlite) {
+              sqliteDb.exec("PRAGMA foreign_keys = OFF");
+              sqliteDb.exec("BEGIN TRANSACTION");
+            } else {
+              connection = await pool.getConnection();
+              await connection.query("SET FOREIGN_KEY_CHECKS = 0");
+              await connection.beginTransaction();
+            }
+
+            // 1. Clear all current tables
+            for (const table of currentTables) {
+              console.log(`Clearing table: ${table}`);
+              if (isUsingSqlite) {
+                sqliteDb.prepare(`DELETE FROM \`${table}\``).run();
+                // Also reset auto-increment counters
+                try {
+                  sqliteDb.prepare("DELETE FROM sqlite_sequence WHERE name=?").run(table);
+                } catch (e) {}
+              } else {
+                await connection.query(`DELETE FROM \`${table}\``);
+              }
+            }
+
+            // 2. Restore data from backup
+            const backupTables = Object.keys(backup);
+            console.log(`Restoring ${backupTables.length} tables from backup`);
+            
+            for (const table of backupTables) {
+              const rows = backup[table];
+              if (!Array.isArray(rows) || rows.length === 0) continue;
+
+              // Check if table exists in current database
+              if (!currentTables.includes(table)) {
+                console.warn(`Table ${table} in backup does not exist in current database. Skipping.`);
+                continue;
+              }
+
+              console.log(`Restoring table: ${table} (${rows.length} rows)`);
+              
+              // Get columns for this table to ensure we only insert existing ones
+              let tableColumns: string[] = [];
+              if (isUsingSqlite) {
+                const info = sqliteDb.prepare(`PRAGMA table_info(\`${table}\`)`).all();
+                tableColumns = info.map((c: any) => c.name);
+              } else {
+                const [info] = await connection.query(`DESCRIBE \`${table}\``);
+                tableColumns = info.map((c: any) => c.Field);
+              }
+
+              const keys = Object.keys(rows[0]).filter(k => tableColumns.includes(k));
+              if (keys.length === 0) {
+                console.warn(`No matching columns for table ${table}. Skipping.`);
+                continue;
+              }
+
+              const columns = keys.map(k => `\`${k}\``).join(', ');
+              
+              if (isUsingSqlite) {
+                const placeholders = keys.map(() => '?').join(', ');
+                const stmt = sqliteDb.prepare(`INSERT INTO \`${table}\` (${columns}) VALUES (${placeholders})`);
+                for (const row of rows) {
+                  const values = keys.map(k => row[k] ?? null);
+                  stmt.run(...values);
+                }
+              } else {
+                // Bulk insert for MySQL
+                const values = rows.map(row => keys.map(k => row[k] ?? null));
+                await connection.query(`INSERT INTO \`${table}\` (${columns}) VALUES ?`, [values]);
+              }
+            }
+
+            if (isUsingSqlite) {
+              sqliteDb.exec("COMMIT");
+              sqliteDb.exec("PRAGMA foreign_keys = ON");
+            } else {
+              await connection.commit();
+              await connection.query("SET FOREIGN_KEY_CHECKS = 1");
+              connection.release();
+            }
+
+            console.log("Restore completed successfully");
+            res.json({ success: true });
+          } catch (error) {
+            console.error("Import failed:", error);
+            if (isUsingSqlite) {
+              try { sqliteDb.exec("ROLLBACK"); } catch(e) {}
+              try { sqliteDb.exec("PRAGMA foreign_keys = ON"); } catch(e) {}
+            } else if (connection) {
+              try { await connection.rollback(); } catch(e) {}
+              try { await connection.query("SET FOREIGN_KEY_CHECKS = 1"); } catch(e) {}
+              connection.release();
+            }
+            res.status(500).json({ error: "Import failed: " + String(error) });
+          }
         }
         break;
 

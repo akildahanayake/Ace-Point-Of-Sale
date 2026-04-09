@@ -1,4 +1,4 @@
-import { Product, Category, Sale, SaleItem, InventoryItem, Recipe, Account, Branch, Customer, AccountTransaction, Warehouse } from '../types';
+import { Product, Category, Sale, SaleItem, InventoryItem, Recipe, Account, Branch, Customer, AccountTransaction, Warehouse, User } from '../types';
 
 const API_URL = '/api';
 
@@ -41,9 +41,9 @@ export const posService = {
       const mapped = data.map((p: any) => ({
         id: p.id.toString(),
         name: p.name,
-        price: parseFloat(p.price),
+        price: parseFloat(p.price) || 0,
         category: p.category_id.toString(),
-        stock: parseInt(p.stock_quantity),
+        stock: parseInt(p.stock_quantity) || 0,
         sku: p.sku,
         image: p.image_url,
         createdAt: p.created_at,
@@ -127,9 +127,9 @@ export const posService = {
     return poll('/index.php?action=sales', (data) => {
       const mapped = data.map((s: any) => ({
         id: s.id.toString(),
-        total: parseFloat(s.grand_total),
-        subtotal: parseFloat(s.subtotal),
-        tax: parseFloat(s.tax_amount || 0),
+        total: parseFloat(s.grand_total) || 0,
+        subtotal: parseFloat(s.subtotal) || 0,
+        tax: parseFloat(s.tax_amount || 0) || 0,
         paymentMethod: s.payment_method,
         timestamp: { toDate: () => new Date(s.created_at) },
         items: []
@@ -145,8 +145,8 @@ export const posService = {
         id: i.id.toString(),
         name: i.name,
         baseUnit: i.base_unit,
-        cost: parseFloat(i.cost),
-        stock: parseFloat(i.stock),
+        cost: parseFloat(i.cost) || 0,
+        stock: parseFloat(i.stock) || 0,
         branchId: i.branch_id?.toString()
       }));
       callback(mapped);
@@ -244,7 +244,7 @@ export const posService = {
         branch_id: a.branch_id.toString(),
         name: a.name,
         type: a.type,
-        balance: parseFloat(a.balance)
+        balance: parseFloat(a.balance) || 0
       }));
       callback(mapped);
     });
@@ -320,8 +320,8 @@ export const posService = {
       const mapped = data.map((tx: any) => ({
         ...tx,
         id: tx.id.toString(),
-        debit: parseFloat(tx.debit),
-        credit: parseFloat(tx.credit),
+        debit: parseFloat(tx.debit) || 0,
+        credit: parseFloat(tx.credit) || 0,
         createdAt: { toDate: () => new Date(tx.created_at) }
       }));
       callback(mapped);
@@ -392,6 +392,119 @@ export const posService = {
     return apiFetch('/index.php?action=stock_transfers', {
       method: 'POST',
       body: JSON.stringify(transfer),
+    });
+  },
+
+  // Users
+  login: async (email: string, password: string): Promise<User> => {
+    return apiFetch('/index.php?action=login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    });
+  },
+
+  subscribeToUsers: (callback: (users: User[]) => void) => {
+    return poll('/index.php?action=users', (data) => {
+      const mapped = data.map((u: any) => ({
+        id: u.id.toString(),
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        phone: u.phone,
+        address: u.address,
+        empNo: u.emp_no,
+        idNumber: u.id_number,
+        username: u.username,
+        password: u.password,
+        joinedDate: u.joined_date,
+        branchIds: u.branch_ids ? JSON.parse(u.branch_ids) : [],
+        isActive: Boolean(parseInt(u.is_active))
+      }));
+      callback(mapped);
+    });
+  },
+
+  addUser: async (user: Omit<User, 'id'>) => {
+    return apiFetch('/index.php?action=users', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        phone: user.phone,
+        address: user.address,
+        emp_no: user.empNo,
+        id_number: user.idNumber,
+        username: user.username,
+        password: user.password,
+        joined_date: user.joinedDate,
+        branch_ids: JSON.stringify(user.branchIds),
+        is_active: user.isActive ? 1 : 0
+      }),
+    });
+  },
+
+  updateUser: async (id: string, user: Partial<User>) => {
+    const body: any = {};
+    if (user.name !== undefined) body.name = user.name;
+    if (user.email !== undefined) body.email = user.email;
+    if (user.role !== undefined) body.role = user.role;
+    if (user.phone !== undefined) body.phone = user.phone;
+    if (user.address !== undefined) body.address = user.address;
+    if (user.empNo !== undefined) body.emp_no = user.empNo;
+    if (user.idNumber !== undefined) body.id_number = user.idNumber;
+    if (user.username !== undefined) body.username = user.username;
+    if (user.password !== undefined) body.password = user.password;
+    if (user.joinedDate !== undefined) body.joined_date = user.joinedDate;
+    if (user.branchIds !== undefined) body.branch_ids = JSON.stringify(user.branchIds);
+    if (user.isActive !== undefined) body.is_active = user.isActive ? 1 : 0;
+    
+    return apiFetch(`/index.php?action=update_user&id=${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    });
+  },
+
+  deleteUser: async (id: string) => {
+    return apiFetch(`/index.php?action=delete_user&id=${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  exportData: async () => {
+    return apiFetch('/index.php?action=export_data', {
+      method: 'GET',
+    });
+  },
+
+  importData: async (data: any) => {
+    return apiFetch('/index.php?action=import_data', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+  },
+
+  exportSql: async () => {
+    const response = await fetch('/api/index.php?action=export_sql');
+    if (!response.ok) throw new Error('Failed to export SQL');
+    return response.text();
+  },
+
+  importSql: async (sql: string) => {
+    return apiFetch('/index.php?action=import_sql', {
+      method: 'POST',
+      body: JSON.stringify({ sql }),
+    });
+  },
+
+  getSettings: async () => {
+    return apiFetch('/index.php?action=settings');
+  },
+
+  updateSettings: async (settings: any) => {
+    return apiFetch('/index.php?action=settings', {
+      method: 'POST',
+      body: JSON.stringify(settings),
     });
   }
 };

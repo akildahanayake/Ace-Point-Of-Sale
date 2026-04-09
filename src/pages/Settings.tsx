@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { posService } from '../services/posService';
 import { 
   Settings as SettingsIcon, 
   Bell, 
@@ -100,8 +101,11 @@ const Settings: React.FC = () => {
 };
 
 const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
-    companyName: 'Ace Point Of Sale',
+    companyName: '',
+    companyTrn: '',
     address: '',
     phone: '',
     email: '',
@@ -115,10 +119,72 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     serviceCharge: 0
   });
 
-  const handleSave = () => {
-    toast.success('General settings saved successfully');
-    onBack();
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const data = await posService.getSettings();
+        if (data && data.id) {
+          setFormData({
+            companyName: data.company_name || '',
+            companyTrn: data.company_trn || '',
+            address: data.address || '',
+            phone: data.phone || '',
+            email: data.email || '',
+            whatsapp: data.whatsapp || '',
+            facebook: data.facebook || '',
+            instagram: data.instagram || '',
+            currencyName: data.currency_name || 'US Dollar',
+            currencySign: data.currency_sign || '$',
+            currencyPrefix: data.currency_prefix === 1,
+            taxPercentage: data.tax_percentage || 0,
+            serviceCharge: data.service_charge || 0
+          });
+        }
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+        toast.error('Failed to load settings');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadSettings();
+  }, []);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await posService.updateSettings({
+        company_name: formData.companyName,
+        company_trn: formData.companyTrn,
+        address: formData.address,
+        phone: formData.phone,
+        email: formData.email,
+        whatsapp: formData.whatsapp,
+        facebook: formData.facebook,
+        instagram: formData.instagram,
+        currency_name: formData.currencyName,
+        currency_sign: formData.currencySign,
+        currency_prefix: formData.currencyPrefix ? 1 : 0,
+        tax_percentage: formData.taxPercentage,
+        service_charge: formData.serviceCharge
+      });
+      toast.success('General settings saved successfully');
+      onBack();
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      toast.error('Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <RefreshCw className="animate-spin text-indigo-600" size={40} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 pb-20">
@@ -140,6 +206,16 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 type="text" 
                 value={formData.companyName}
                 onChange={(e) => setFormData({...formData, companyName: e.target.value})}
+                className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-slate-700">Company TRN Number</label>
+              <input 
+                type="text" 
+                placeholder="Tax Registration Number"
+                value={formData.companyTrn}
+                onChange={(e) => setFormData({...formData, companyTrn: e.target.value})}
                 className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
               />
             </div>
@@ -279,10 +355,11 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 
         <button 
           onClick={handleSave}
-          className="w-full bg-indigo-600 text-white font-bold py-5 rounded-3xl shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all flex items-center justify-center gap-3 text-lg"
+          disabled={saving}
+          className="w-full bg-indigo-600 text-white font-bold py-5 rounded-3xl shadow-xl shadow-indigo-200 hover:bg-indigo-700 transition-all flex items-center justify-center gap-3 text-lg disabled:opacity-50"
         >
-          <Save size={24} />
-          Save All General Settings
+          {saving ? <RefreshCw size={24} className="animate-spin" /> : <Save size={24} />}
+          {saving ? 'Saving Settings...' : 'Save All General Settings'}
         </button>
       </div>
     </div>
@@ -290,6 +367,91 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
 };
 
 const DatabaseSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
+  const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [showRestoreWarning, setShowRestoreWarning] = useState(false);
+  const [pendingBackupData, setPendingBackupData] = useState<any>(null);
+  const [backupType, setBackupType] = useState<'json' | 'sql'>('json');
+
+  const handleExport = async (type: 'json' | 'sql') => {
+    setIsExporting(true);
+    try {
+      if (type === 'json') {
+        const data = await posService.exportData();
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `pos_backup_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      } else {
+        const sql = await posService.exportSql();
+        const blob = new Blob([sql], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `pos_backup_${new Date().toISOString().split('T')[0]}.sql`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
+      toast.success(`${type.toUpperCase()} Backup generated and downloaded successfully`);
+    } catch (error) {
+      toast.error('Failed to generate backup');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const isSql = file.name.endsWith('.sql');
+    setBackupType(isSql ? 'sql' : 'json');
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        if (isSql) {
+          setPendingBackupData(content);
+        } else {
+          setPendingBackupData(JSON.parse(content));
+        }
+        setShowRestoreWarning(true);
+      } catch (error) {
+        toast.error('Invalid backup file format');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const handleRestore = async () => {
+    if (!pendingBackupData) return;
+    setIsImporting(true);
+    setShowRestoreWarning(false);
+    try {
+      if (backupType === 'json') {
+        await posService.importData(pendingBackupData);
+      } else {
+        await posService.importSql(pendingBackupData);
+      }
+      toast.success('System restored successfully. Refreshing...');
+      setTimeout(() => window.location.reload(), 2000);
+    } catch (error) {
+      toast.error('Failed to restore system');
+    } finally {
+      setIsImporting(false);
+      setPendingBackupData(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4 mb-6">
@@ -305,10 +467,25 @@ const DatabaseSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             <Download size={24} />
           </div>
           <h3 className="text-lg font-bold text-slate-800">Export Data</h3>
-          <p className="text-slate-500 text-sm">Download a full backup of your system data in SQL or JSON format.</p>
-          <button className="w-full py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors">
-            Generate Backup
-          </button>
+          <p className="text-slate-500 text-sm">Download a full backup of your system data.</p>
+          <div className="grid grid-cols-2 gap-3">
+            <button 
+              onClick={() => handleExport('json')}
+              disabled={isExporting}
+              className="py-3 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {isExporting ? <RefreshCw size={18} className="animate-spin" /> : <Download size={18} />}
+              JSON
+            </button>
+            <button 
+              onClick={() => handleExport('sql')}
+              disabled={isExporting}
+              className="py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+            >
+              {isExporting ? <RefreshCw size={18} className="animate-spin" /> : <Database size={18} />}
+              SQL
+            </button>
+          </div>
         </div>
 
         <div className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-sm space-y-4">
@@ -316,12 +493,52 @@ const DatabaseSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             <Upload size={24} />
           </div>
           <h3 className="text-lg font-bold text-slate-800">Import Data</h3>
-          <p className="text-slate-500 text-sm">Restore your system from a previously generated backup file.</p>
-          <button className="w-full py-3 border-2 border-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-colors">
-            Upload File
-          </button>
+          <p className="text-slate-500 text-sm">Restore your system from a JSON or SQL backup file.</p>
+          <label className="w-full py-3 border-2 border-slate-100 text-slate-600 rounded-xl font-bold hover:bg-slate-50 transition-colors cursor-pointer flex items-center justify-center gap-2">
+            {isImporting ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+            Upload Backup File
+            <input type="file" accept=".json,.sql" onChange={handleFileSelect} className="hidden" disabled={isImporting} />
+          </label>
         </div>
       </div>
+
+      <AnimatePresence>
+        {showRestoreWarning && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }} 
+              exit={{ scale: 0.9, opacity: 0 }} 
+              className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl text-center"
+            >
+              <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <AlertCircle size={32} />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">Restore System?</h2>
+              <p className="text-slate-500 mb-8">
+                <strong>Warning:</strong> This will overwrite ALL current data with the data from the backup file. This action cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => {
+                    setShowRestoreWarning(false);
+                    setPendingBackupData(null);
+                  }}
+                  className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleRestore}
+                  className="flex-1 py-3 bg-amber-600 text-white font-bold rounded-2xl hover:bg-amber-700 transition-all shadow-lg shadow-amber-200"
+                >
+                  Restore Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

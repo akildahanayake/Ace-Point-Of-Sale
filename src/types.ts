@@ -1,3 +1,19 @@
+export interface User {
+  id: string;
+  name: string;
+  role: 'admin' | 'manager' | 'cashier' | 'waiter';
+  email: string;
+  phone?: string;
+  address?: string;
+  empNo?: string;
+  idNumber?: string;
+  username?: string;
+  password?: string;
+  joinedDate?: string;
+  branchIds: string[]; // Multiple branches
+  isActive: boolean;
+}
+
 export interface Product {
   id: string;
   name: string;

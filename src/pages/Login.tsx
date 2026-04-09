@@ -1,34 +1,65 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { Lock, Mail, Store, ArrowRight, Loader2 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+
+import { posService } from '../services/posService';
+import { User } from '../types';
 
 const Login: React.FC = () => {
   const { login } = useApp();
   const [email, setEmail] = useState('admin@vibepos.com');
   const [password, setPassword] = useState('password');
   const [loading, setLoading] = useState(false);
+  const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+  const [showTester, setShowTester] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  React.useEffect(() => {
+    // Fetch users for the testing selector
+    const fetchUsers = async () => {
+      try {
+        const response = await fetch('/api/index.php?action=users');
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableUsers(data.map((u: any) => ({
+            id: u.id.toString(),
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            password: u.password // We need this for the quick login
+          })));
+        }
+      } catch (e) {
+        console.error('Failed to fetch users for tester', e);
+      }
+    };
+    fetchUsers();
+  }, []);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     
-    // Simulate API call
-    setTimeout(() => {
-      if (email === 'admin@vibepos.com' && password === 'password') {
-        login({
-          id: '1',
-          name: 'John Admin',
-          role: 'admin',
-          branchId: '1'
-        });
-        toast.success('Welcome back, John!');
-      } else {
-        toast.error('Invalid credentials');
-      }
+    try {
+      const userData = await posService.login(email, password);
+      login(userData);
+      toast.success(`Welcome back, ${userData.name}!`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Invalid credentials');
+    } finally {
       setLoading(false);
-    }, 1000);
+    }
+  };
+
+  const handleQuickLogin = (user: User & { password?: string }) => {
+    setEmail(user.email);
+    setPassword(user.password || 'password');
+    // Trigger login automatically
+    setTimeout(() => {
+      const form = document.querySelector('form');
+      form?.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+    }, 100);
   };
 
   return (
@@ -99,10 +130,47 @@ const Login: React.FC = () => {
           </button>
         </form>
 
-        <div className="mt-10 text-center">
+        <div className="mt-10 text-center space-y-4">
           <p className="text-slate-500 text-sm">
             Demo Credentials: <span className="text-indigo-400">admin@vibepos.com / password</span>
           </p>
+
+          {/* Testing Only: User Selector */}
+          <div className="pt-6 border-t border-white/5">
+            <button 
+              onClick={() => setShowTester(!showTester)}
+              className="text-xs font-bold text-slate-500 hover:text-indigo-400 transition-colors uppercase tracking-widest"
+            >
+              {showTester ? 'Hide Test Accounts' : 'Show Test Accounts (Testing Only)'}
+            </button>
+            
+            <AnimatePresence>
+              {showTester && (
+                <motion.div 
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden mt-4"
+                >
+                  <div className="grid grid-cols-2 gap-2">
+                    {availableUsers.map(u => (
+                      <button
+                        key={u.id}
+                        onClick={() => handleQuickLogin(u)}
+                        className="p-3 bg-white/5 border border-white/10 rounded-xl text-left hover:bg-white/10 transition-all group"
+                      >
+                        <p className="text-xs font-bold text-white truncate">{u.name}</p>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-tighter group-hover:text-indigo-400">{u.role}</p>
+                      </button>
+                    ))}
+                  </div>
+                  {availableUsers.length === 0 && (
+                    <p className="text-xs text-slate-600 italic">No users found in database</p>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </div>
       </motion.div>
     </div>

@@ -13,7 +13,9 @@ import {
   X,
   Edit2,
   Trash2,
-  Power
+  Power,
+  FileText,
+  Printer
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -26,6 +28,8 @@ const Branches: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [isAddingBranch, setIsAddingBranch] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
+  const [viewingReceiptBranch, setViewingReceiptBranch] = useState<Branch | null>(null);
+  const [settings, setSettings] = useState<any>(null);
   const [newBranch, setNewBranch] = useState({ 
     name: '', 
     address: '', 
@@ -51,6 +55,18 @@ const Branches: React.FC = () => {
       toast.error('Failed to load branches');
     });
     return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      try {
+        const data = await posService.getSettings();
+        setSettings(data);
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+      }
+    };
+    loadSettings();
   }, []);
 
   const handleAddBranch = async (e: React.FormEvent) => {
@@ -199,6 +215,13 @@ const Branches: React.FC = () => {
                     <Edit2 size={18} />
                   </button>
                   <button 
+                    onClick={() => setViewingReceiptBranch(branch)}
+                    className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                    title="View Receipt Template"
+                  >
+                    <FileText size={18} />
+                  </button>
+                  <button 
                     onClick={() => toggleBranchStatus(branch)}
                     className={cn(
                       "p-2 rounded-xl transition-all",
@@ -210,17 +233,19 @@ const Branches: React.FC = () => {
                   </button>
                 </>
               )}
-              <button 
-                onClick={() => switchBranch(branch)}
-                className={cn(
-                  "flex-1 py-2 text-sm font-bold rounded-xl transition-colors",
-                  currentBranch?.id === branch.id 
-                    ? "bg-indigo-600 text-white" 
-                    : "text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
-                )}
-              >
-                {currentBranch?.id === branch.id ? 'Current' : 'Select'}
-              </button>
+              {user && user.branchIds.length > 1 && (
+                <button 
+                  onClick={() => switchBranch(branch)}
+                  className={cn(
+                    "flex-1 py-2 text-sm font-bold rounded-xl transition-colors",
+                    currentBranch?.id === branch.id 
+                      ? "bg-indigo-600 text-white" 
+                      : "text-indigo-600 bg-indigo-50 hover:bg-indigo-100"
+                  )}
+                >
+                  {currentBranch?.id === branch.id ? 'Current' : 'Select'}
+                </button>
+              )}
             </div>
           </motion.div>
         ))}
@@ -322,6 +347,149 @@ const Branches: React.FC = () => {
                   {editingBranch ? 'Update Branch' : 'Create Branch'}
                 </button>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {viewingReceiptBranch && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }} 
+              exit={{ scale: 0.9, opacity: 0 }} 
+              className="bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+            >
+              <div className="flex justify-between items-center mb-6">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-800">Receipt Template</h2>
+                  <p className="text-sm text-slate-500">Sample preview for {viewingReceiptBranch.name}</p>
+                </div>
+                <button 
+                  onClick={() => setViewingReceiptBranch(null)} 
+                  className="p-2 hover:bg-slate-100 rounded-full"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto pr-2">
+                <div className="bg-slate-50 rounded-2xl p-6 border-2 border-dashed border-slate-200">
+                  {/* Receipt Content */}
+                  <div className="bg-white shadow-sm mx-auto max-w-[300px] p-6 text-slate-800 font-mono text-sm space-y-4">
+                    {/* Header */}
+                    <div className="text-center space-y-1 border-b border-dashed border-slate-200 pb-4">
+                      <h3 className="font-bold text-lg uppercase">{settings?.company_name || 'Company Name'}</h3>
+                      <p className="font-bold">{viewingReceiptBranch.name}</p>
+                      <p className="text-[10px] leading-tight">{viewingReceiptBranch.address}</p>
+                      <p className="text-[10px]">Tel: {viewingReceiptBranch.phone}</p>
+                      <p className="text-[10px]">{viewingReceiptBranch.email}</p>
+                      {settings?.company_trn && (
+                        <p className="text-[10px] font-bold mt-1">TRN: {settings.company_trn}</p>
+                      )}
+                    </div>
+
+                    {/* Meta */}
+                    <div className="text-[10px] space-y-0.5">
+                      <div className="flex justify-between">
+                        <span>Date:</span>
+                        <span>{new Date().toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Time:</span>
+                        <span>{new Date().toLocaleTimeString()}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Order:</span>
+                        <span>ORD-123456789</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Cashier:</span>
+                        <span>{user?.name || 'Admin'}</span>
+                      </div>
+                    </div>
+
+                    {/* Body */}
+                    <div className="border-y border-dashed border-slate-200 py-2 space-y-1">
+                      <div className="flex justify-between font-bold text-[10px]">
+                        <span className="w-1/2">Item</span>
+                        <span className="w-1/6 text-center">Qty</span>
+                        <span className="w-1/3 text-right">Total</span>
+                      </div>
+                      <div className="flex justify-between text-[10px]">
+                        <span className="w-1/2">Sample Product A</span>
+                        <span className="w-1/6 text-center">2</span>
+                        <span className="w-1/3 text-right">20.00</span>
+                      </div>
+                      <div className="flex justify-between text-[10px]">
+                        <span className="w-1/2">Sample Product B</span>
+                        <span className="w-1/6 text-center">1</span>
+                        <span className="w-1/3 text-right">15.00</span>
+                      </div>
+                    </div>
+
+                    {/* Totals */}
+                    <div className="space-y-1 pt-2">
+                      <div className="flex justify-between text-[10px]">
+                        <span>Subtotal:</span>
+                        <span>35.00</span>
+                      </div>
+                      <div className="flex justify-between text-[10px]">
+                        <span>Tax ({settings?.tax_percentage || 0}%):</span>
+                        <span>{(35 * (settings?.tax_percentage || 0) / 100).toFixed(2)}</span>
+                      </div>
+                      {settings?.service_charge > 0 && (
+                        <div className="flex justify-between text-[10px]">
+                          <span>Service Charge ({settings.service_charge}%):</span>
+                          <span>{(35 * settings.service_charge / 100).toFixed(2)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between font-bold text-base pt-1 border-t border-slate-100">
+                        <span>TOTAL:</span>
+                        <span>{(35 * (1 + (settings?.tax_percentage || 0) / 100 + (settings?.service_charge || 0) / 100)).toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    {/* Payment */}
+                    <div className="text-[10px] pt-2">
+                      <div className="flex justify-between">
+                        <span>Payment Method:</span>
+                        <span className="font-bold">CASH</span>
+                      </div>
+                    </div>
+
+                    {/* Footer */}
+                    <div className="text-center space-y-2 pt-4 border-t border-dashed border-slate-200">
+                      <p className="text-[10px] font-bold italic">Thank you for your business!</p>
+                      <div className="bg-slate-50 p-2 rounded-lg">
+                        <p className="text-[9px]">Customer Loyalty Points</p>
+                        <p className="text-xs font-bold">Current Balance: 150 pts</p>
+                      </div>
+                      <p className="text-[8px] text-slate-400">Powered by Ace POS</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 flex gap-3">
+                <button 
+                  onClick={() => setViewingReceiptBranch(null)}
+                  className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all"
+                >
+                  Close Preview
+                </button>
+                <button 
+                  onClick={() => {
+                    window.print();
+                    toast.success('Sending to printer...');
+                  }}
+                  className="flex-1 py-3 bg-indigo-600 text-white font-bold rounded-2xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200 flex items-center justify-center gap-2"
+                >
+                  <Printer size={18} />
+                  Print Sample
+                </button>
+              </div>
             </motion.div>
           </div>
         )}

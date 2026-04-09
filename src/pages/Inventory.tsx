@@ -23,6 +23,8 @@ import { formatCurrency, cn } from '../lib/utils';
 import { toast } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
+import Barcode from 'react-barcode';
+import { QRCodeSVG } from 'qrcode.react';
 
 const Inventory: React.FC = () => {
   const { currentBranch, user, branches } = useApp();
@@ -47,6 +49,10 @@ const Inventory: React.FC = () => {
   const [isEditingWarehouse, setIsEditingWarehouse] = useState(false);
   const [isAdjustingStock, setIsAdjustingStock] = useState(false);
   const [isTransferringStock, setIsTransferringStock] = useState(false);
+  const [viewingCodesProduct, setViewingCodesProduct] = useState<Product | null>(null);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [isBulkPrinting, setIsBulkPrinting] = useState(false);
+  const [bulkPrintType, setBulkPrintType] = useState<'barcode' | 'qrcode'>('barcode');
 
   // Form states
   const [newProduct, setNewProduct] = useState({ name: '', price: 0, category: '', stock: 0, sku: '', image: '', expiryDate: '' });
@@ -59,9 +65,15 @@ const Inventory: React.FC = () => {
   const [newRecipe, setNewRecipe] = useState({ productId: '', inventoryItemId: '', quantity: 0 });
   const [newWarehouse, setNewWarehouse] = useState({ name: '', location: '' });
   const [adjustmentForm, setAdjustmentForm] = useState({ item_id: '', item_type: 'product' as 'product' | 'inventory_item', quantity: 0, reason: '' });
-  const [transferForm, setTransferForm] = useState({ item_id: '', item_type: 'product' as 'product' | 'inventory_item', from_branch_id: '', to_branch_id: '', quantity: 0 });
+  const [transferForm, setTransferForm] = useState({ item_id: '', item_type: 'product' as 'product' | 'inventory_item', from_branch_id: currentBranch?.id || '', to_branch_id: '', quantity: 0 });
 
   const isAdmin = user?.role === 'admin';
+
+  useEffect(() => {
+    if (currentBranch && !transferForm.from_branch_id) {
+      setTransferForm(prev => ({ ...prev, from_branch_id: currentBranch.id }));
+    }
+  }, [currentBranch]);
 
   useEffect(() => {
     const handleError = (error: any) => {
@@ -139,10 +151,25 @@ const Inventory: React.FC = () => {
 
   const handleTogglePause = async (product: Product) => {
     try {
-      await posService.updateProduct(product.id, { isPaused: !product.isPaused });
-      toast.success(product.isPaused ? 'Product unpaused' : 'Product paused');
+      const updatedProduct = { ...product, isPaused: !product.isPaused };
+      await posService.updateProduct(product.id, updatedProduct);
+      toast.success(updatedProduct.isPaused ? 'Product paused' : 'Product unpaused');
     } catch (error) {
       toast.error('Failed to update status');
+    }
+  };
+
+  const toggleProductSelection = (id: string) => {
+    setSelectedProductIds(prev => 
+      prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]
+    );
+  };
+
+  const toggleAllProducts = () => {
+    if (selectedProductIds.length === branchProducts.length) {
+      setSelectedProductIds([]);
+    } else {
+      setSelectedProductIds(branchProducts.map(p => p.id));
     }
   };
 
@@ -395,11 +422,33 @@ const Inventory: React.FC = () => {
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
           <div className="p-6 border-b border-slate-100 flex items-center justify-between">
             <h2 className="text-lg font-bold text-slate-800">Branch Products ({currentBranch?.name})</h2>
+            {selectedProductIds.length > 0 && (
+              <div className="flex items-center gap-4 animate-in fade-in slide-in-from-right-4">
+                <span className="text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full">
+                  {selectedProductIds.length} Selected
+                </span>
+                <button 
+                  onClick={() => setIsBulkPrinting(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all font-bold shadow-lg shadow-indigo-100"
+                >
+                  <Search size={18} />
+                  Bulk Print Codes
+                </button>
+              </div>
+            )}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left">
               <thead>
                 <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                  <th className="px-6 py-4 font-semibold">
+                    <input 
+                      type="checkbox" 
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={branchProducts.length > 0 && selectedProductIds.length === branchProducts.length}
+                      onChange={toggleAllProducts}
+                    />
+                  </th>
                   <th className="px-6 py-4 font-semibold">SKU</th>
                   <th className="px-6 py-4 font-semibold">Item</th>
                   <th className="px-6 py-4 font-semibold">Price</th>
@@ -412,7 +461,15 @@ const Inventory: React.FC = () => {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {branchProducts.map((product) => (
-                  <tr key={product.id} className={cn("hover:bg-slate-50 transition-colors group", product.isPaused && "opacity-60 grayscale")}>
+                  <tr key={product.id} className={cn("hover:bg-slate-50 transition-colors group", (product.isPaused || (product.expiryDate && new Date(product.expiryDate) < new Date())) && "opacity-60 grayscale")}>
+                    <td className="px-6 py-4">
+                      <input 
+                        type="checkbox" 
+                        className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        checked={selectedProductIds.includes(product.id)}
+                        onChange={() => toggleProductSelection(product.id)}
+                      />
+                    </td>
                     <td className="px-6 py-4 text-sm font-mono text-slate-500">{product.sku || '-'}</td>
                     <td className="px-6 py-4">
                       <div className="flex items-center gap-3">
@@ -421,7 +478,10 @@ const Inventory: React.FC = () => {
                         </div>
                         <div>
                           <span className="font-medium text-slate-800 block">{product.name}</span>
-                          {product.isPaused && <span className="text-[10px] uppercase font-bold text-amber-600">Paused</span>}
+                          {product.isPaused && <span className="text-[10px] uppercase font-bold text-amber-600 mr-2">Paused</span>}
+                          {product.expiryDate && new Date(product.expiryDate) < new Date() && (
+                            <span className="text-[10px] uppercase font-bold text-rose-600">Expired</span>
+                          )}
                         </div>
                       </div>
                     </td>
@@ -445,7 +505,7 @@ const Inventory: React.FC = () => {
                     </td>
                     <td className="px-6 py-4 text-right">
                       {isAdmin && (
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex justify-end gap-2">
                           <button 
                             onClick={() => handleTogglePause(product)}
                             title={product.isPaused ? "Unpause" : "Pause"}
@@ -454,13 +514,22 @@ const Inventory: React.FC = () => {
                             <AlertCircle size={18} />
                           </button>
                           <button 
-                            onClick={() => { setEditingProduct(product); setIsEditingProduct(true); }}
+                            onClick={() => setViewingCodesProduct(product)}
+                            title="View Barcode/QR Code"
                             className="p-2 text-slate-400 hover:text-indigo-600 transition-colors"
+                          >
+                            <Search size={18} />
+                          </button>
+                          <button 
+                            onClick={() => { setEditingProduct(product); setIsEditingProduct(true); }}
+                            title="Edit Product"
+                            className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
                           >
                             <Edit2 size={18} />
                           </button>
                           <button 
                             onClick={() => handleDeleteProduct(product.id)}
+                            title="Delete Product"
                             className="p-2 text-slate-400 hover:text-rose-500 transition-colors"
                           >
                             <Trash2 size={18} />
@@ -499,15 +568,17 @@ const Inventory: React.FC = () => {
                     <td className="px-6 py-4 text-slate-600">{item.stock} {item.baseUnit}</td>
                     <td className="px-6 py-4 text-right">
                       {isAdmin && (
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex justify-end gap-2">
                           <button 
                             onClick={() => { setEditingItem(item); setIsEditingItem(true); }}
-                            className="p-2 text-slate-400 hover:text-indigo-600 transition-colors"
+                            title="Edit Ingredient"
+                            className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
                           >
                             <Edit2 size={18} />
                           </button>
                           <button 
                             onClick={() => handleDeleteItem(item.id)}
+                            title="Delete Ingredient"
                             className="p-2 text-slate-400 hover:text-rose-500 transition-colors"
                           >
                             <Trash2 size={18} />
@@ -543,16 +614,18 @@ const Inventory: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <span className="font-bold text-slate-800">{recipe.quantity} {item?.baseUnit}</span>
                           {isAdmin && (
-                            <div className="flex gap-1 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                            <div className="flex gap-1">
                               <button 
                                 onClick={() => { setEditingRecipe(recipe); setIsEditingRecipe(true); }}
-                                className="p-1 text-slate-400 hover:text-indigo-600"
+                                title="Edit Recipe"
+                                className="p-1 text-slate-400 hover:text-emerald-600 transition-colors"
                               >
                                 <Edit2 size={14} />
                               </button>
                               <button 
                                 onClick={() => handleDeleteRecipe(recipe.id)}
-                                className="p-1 text-slate-400 hover:text-rose-500"
+                                title="Delete Recipe"
+                                className="p-1 text-slate-400 hover:text-rose-500 transition-colors"
                               >
                                 <Trash2 size={14} />
                               </button>
@@ -584,15 +657,17 @@ const Inventory: React.FC = () => {
                   </div>
                 </div>
                 {isAdmin && (
-                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <div className="flex gap-2">
                     <button 
                       onClick={() => { setEditingWarehouse(warehouse); setIsEditingWarehouse(true); }}
-                      className="p-2 text-slate-400 hover:text-indigo-600 transition-colors"
+                      title="Edit Warehouse"
+                      className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
                     >
                       <Edit2 size={18} />
                     </button>
                     <button 
                       onClick={() => handleDeleteWarehouse(warehouse.id)}
+                      title="Delete Warehouse"
                       className="p-2 text-slate-400 hover:text-rose-500 transition-colors"
                     >
                       <Trash2 size={18} />
@@ -911,8 +986,8 @@ const Inventory: React.FC = () => {
                 >
                   <option value="">Select Item</option>
                   {transferForm.item_type === 'product' 
-                    ? branchProducts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)
-                    : branchItems.map(i => <option key={i.id} value={i.id}>{i.name}</option>)
+                    ? products.filter(p => p.branchId === transferForm.from_branch_id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)
+                    : inventoryItems.filter(i => i.branchId === transferForm.from_branch_id).map(i => <option key={i.id} value={i.id}>{i.name}</option>)
                   }
                 </select>
               </div>
@@ -945,6 +1020,259 @@ const Inventory: React.FC = () => {
               <FormInput label="Quantity to Transfer" type="number" value={transferForm.quantity} onChange={v => setTransferForm({...transferForm, quantity: parseFloat(v)})} />
               <SubmitButton label="Execute Transfer" />
             </form>
+          </Modal>
+        )}
+
+        {viewingCodesProduct && (
+          <Modal title="Product Codes" onClose={() => setViewingCodesProduct(null)}>
+            <div className="space-y-8 py-4">
+              <div className="text-center">
+                <h3 className="text-lg font-bold text-slate-800 mb-2">{viewingCodesProduct.name}</h3>
+                <p className="text-sm text-slate-500">SKU: {viewingCodesProduct.sku || 'No SKU assigned'}</p>
+              </div>
+
+              {viewingCodesProduct.sku ? (
+                <div className="space-y-6">
+                  <div className="flex flex-col items-center justify-center p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">Barcode (Code128)</p>
+                    <div className="bg-white p-4 rounded-xl shadow-sm">
+                      <Barcode 
+                        value={viewingCodesProduct.sku} 
+                        width={1.5} 
+                        height={60} 
+                        fontSize={12}
+                        background="transparent"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col items-center justify-center p-6 bg-slate-50 rounded-3xl border border-slate-100">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-6">QR Code</p>
+                    <div className="bg-white p-6 rounded-xl shadow-sm">
+                      <QRCodeSVG 
+                        value={viewingCodesProduct.sku} 
+                        size={120}
+                        level="H"
+                        includeMargin={false}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-8 text-center bg-rose-50 rounded-3xl border border-rose-100">
+                  <AlertCircle className="mx-auto text-rose-500 mb-3" size={32} />
+                  <p className="text-rose-600 font-bold">No SKU Assigned</p>
+                  <p className="text-rose-500 text-sm mt-1">Please edit the product and add an SKU to generate codes.</p>
+                </div>
+              )}
+
+              {viewingCodesProduct.sku && (
+                <div className="grid grid-cols-2 gap-4">
+                  <button 
+                    onClick={() => {
+                      const printWindow = window.open('', '_blank');
+                      if (!printWindow || !viewingCodesProduct) return;
+                      printWindow.document.write(`
+                        <html>
+                          <head>
+                            <title>Print Barcode - ${viewingCodesProduct.name}</title>
+                            <style>
+                              @page { size: auto; margin: 5mm; }
+                              body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+                              .label { text-align: center; border: 1px solid #eee; padding: 10mm; border-radius: 5mm; }
+                              .name { font-weight: bold; font-size: 14pt; margin-bottom: 4mm; }
+                              .sku { font-size: 10pt; color: #666; margin-top: 4mm; }
+                            </style>
+                          </head>
+                          <body>
+                            <div class="label">
+                              <div class="name">${viewingCodesProduct.name}</div>
+                              <div id="barcode"></div>
+                              <div class="sku">${viewingCodesProduct.sku}</div>
+                            </div>
+                            <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+                            <script>
+                              window.onload = () => {
+                                const canvas = document.createElement('canvas');
+                                JsBarcode(canvas, "${viewingCodesProduct.sku}", { width: 2, height: 80, fontSize: 0 });
+                                document.getElementById('barcode').appendChild(canvas);
+                                setTimeout(() => { window.print(); window.close(); }, 500);
+                              };
+                            </script>
+                          </body>
+                        </html>
+                      `);
+                      printWindow.document.close();
+                    }}
+                    className="flex items-center justify-center gap-2 px-6 py-3 bg-indigo-50 text-indigo-600 rounded-xl font-bold hover:bg-indigo-100 transition-all"
+                  >
+                    <Search size={18} />
+                    Print Barcode
+                  </button>
+                  <button 
+                    onClick={() => {
+                      const printWindow = window.open('', '_blank');
+                      if (!printWindow || !viewingCodesProduct) return;
+                      printWindow.document.write(`
+                        <html>
+                          <head>
+                            <title>Print QR Code - ${viewingCodesProduct.name}</title>
+                            <style>
+                              @page { size: auto; margin: 5mm; }
+                              body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+                              .label { text-align: center; border: 1px solid #eee; padding: 10mm; border-radius: 5mm; }
+                              .name { font-weight: bold; font-size: 14pt; margin-bottom: 4mm; }
+                              .sku { font-size: 10pt; color: #666; margin-top: 4mm; }
+                            </style>
+                          </head>
+                          <body>
+                            <div class="label">
+                              <div class="name">${viewingCodesProduct.name}</div>
+                              <div id="qrcode"></div>
+                              <div class="sku">${viewingCodesProduct.sku}</div>
+                            </div>
+                            <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+                            <script>
+                              window.onload = () => {
+                                const canvas = document.createElement('canvas');
+                                QRCode.toCanvas(canvas, "${viewingCodesProduct.sku}", { width: 200, margin: 0 }, (err) => {
+                                  if (err) console.error(err);
+                                  document.getElementById('qrcode').appendChild(canvas);
+                                  setTimeout(() => { window.print(); window.close(); }, 500);
+                                });
+                              };
+                            </script>
+                          </body>
+                        </html>
+                      `);
+                      printWindow.document.close();
+                    }}
+                    className="flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                  >
+                    <Search size={18} />
+                    Print QR Code
+                  </button>
+                </div>
+              )}
+            </div>
+          </Modal>
+        )}
+
+        {isBulkPrinting && (
+          <Modal title="Bulk Print Codes" onClose={() => setIsBulkPrinting(false)}>
+            <div className="space-y-6">
+              <div className="p-4 bg-indigo-50 rounded-2xl">
+                <p className="text-sm text-indigo-700 font-medium">
+                  You have selected {selectedProductIds.length} products. Choose the code type to print on A4.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <button 
+                  onClick={() => setBulkPrintType('barcode')}
+                  className={cn(
+                    "p-6 rounded-3xl border-2 transition-all flex flex-col items-center gap-3",
+                    bulkPrintType === 'barcode' ? "border-indigo-600 bg-indigo-50 text-indigo-600" : "border-slate-100 text-slate-500 hover:border-indigo-200"
+                  )}
+                >
+                  <Search size={32} />
+                  <span className="font-bold">Barcodes</span>
+                </button>
+                <button 
+                  onClick={() => setBulkPrintType('qrcode')}
+                  className={cn(
+                    "p-6 rounded-3xl border-2 transition-all flex flex-col items-center gap-3",
+                    bulkPrintType === 'qrcode' ? "border-indigo-600 bg-indigo-50 text-indigo-600" : "border-slate-100 text-slate-500 hover:border-indigo-200"
+                  )}
+                >
+                  <Search size={32} />
+                  <span className="font-bold">QR Codes</span>
+                </button>
+              </div>
+
+              <button 
+                onClick={() => {
+                  const printWindow = window.open('', '_blank');
+                  if (!printWindow) return;
+
+                  const selectedProducts = products.filter(p => selectedProductIds.includes(p.id));
+                  
+                  printWindow.document.write(`
+                    <html>
+                      <head>
+                        <title>Print Labels</title>
+                        <style>
+                          @page { size: A4; margin: 10mm; }
+                          body { font-family: sans-serif; margin: 0; padding: 0; }
+                          .grid { 
+                            display: grid; 
+                            grid-template-columns: repeat(3, 1fr); 
+                            gap: 10mm; 
+                            padding: 5mm;
+                          }
+                          .label { 
+                            border: 1px solid #eee; 
+                            padding: 5mm; 
+                            text-align: center; 
+                            display: flex; 
+                            flex-direction: column; 
+                            align-items: center;
+                            justify-content: center;
+                            min-height: 40mm;
+                          }
+                          .name { font-weight: bold; font-size: 10pt; margin-bottom: 2mm; }
+                          .sku { font-size: 8pt; color: #666; margin-top: 2mm; }
+                          img { max-width: 100%; height: auto; }
+                        </style>
+                      </head>
+                      <body>
+                        <div class="grid">
+                          ${selectedProducts.map(p => `
+                            <div class="label">
+                              <div class="name">${p.name}</div>
+                              <div id="code-${p.id}"></div>
+                              <div class="sku">${p.sku || 'No SKU'}</div>
+                            </div>
+                          `).join('')}
+                        </div>
+                        <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
+                        <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.1/build/qrcode.min.js"></script>
+                        <script>
+                          window.onload = () => {
+                            const products = ${JSON.stringify(selectedProducts)};
+                            const type = '${bulkPrintType}';
+                            
+                            products.forEach(p => {
+                              const container = document.getElementById('code-' + p.id);
+                              if (type === 'barcode' && p.sku) {
+                                const canvas = document.createElement('canvas');
+                                JsBarcode(canvas, p.sku, { width: 1.5, height: 40, fontSize: 0 });
+                                container.appendChild(canvas);
+                              } else if (type === 'qrcode' && p.sku) {
+                                const canvas = document.createElement('canvas');
+                                QRCode.toCanvas(canvas, p.sku, { width: 100, margin: 0 }, (err) => {
+                                  if (err) console.error(err);
+                                  container.appendChild(canvas);
+                                });
+                              }
+                            });
+                            
+                            setTimeout(() => {
+                              window.print();
+                              window.close();
+                            }, 500);
+                          };
+                        </script>
+                      </body>
+                    </html>
+                  `);
+                  printWindow.document.close();
+                }}
+                className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl shadow-indigo-100 hover:bg-indigo-700 transition-all text-lg"
+              >
+                Generate A4 Print Sheet
+              </button>
+            </div>
           </Modal>
         )}
       </AnimatePresence>

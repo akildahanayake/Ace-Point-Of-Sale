@@ -1,14 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { WorkPeriod, Branch } from '../types';
+import { WorkPeriod, Branch, User } from '../types';
 import { posService } from '../services/posService';
 import { toast } from 'sonner';
-
-interface User {
-  id: string;
-  name: string;
-  role: string;
-  branchId: string;
-}
 
 interface AppContextType {
   user: User | null;
@@ -37,7 +30,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (user && branches.length > 0 && !currentBranch) {
-      const branch = branches.find(b => b.id === user.branchId);
+      // For non-admins, find the first branch they are assigned to
+      const assignedBranchId = user.role === 'admin' ? user.branchIds[0] : user.branchIds[0];
+      const branch = branches.find(b => b.id === assignedBranchId);
       if (branch) setCurrentBranch(branch);
     }
   }, [user, branches, currentBranch]);

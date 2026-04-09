@@ -31,6 +31,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
     { id: 'accounts', icon: Wallet, label: 'Accounts' },
     { id: 'customers', icon: Users, label: 'Customers' },
     { id: 'reports', icon: BarChart3, label: 'Reports' },
+    { id: 'users', icon: Users, label: 'Users' },
     { id: 'settings', icon: Settings, label: 'Settings' },
   ];
 

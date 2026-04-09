@@ -42,7 +42,10 @@ const Dashboard: React.FC = () => {
   }, []);
 
   // Calculate stats
-  const totalRevenue = sales.reduce((sum, sale) => sum + sale.total, 0);
+  const totalRevenue = sales.reduce((sum, sale) => {
+    const val = parseFloat(sale.total as any);
+    return sum + (isNaN(val) ? 0 : val);
+  }, 0);
   const totalSales = sales.length;
   const averageOrderValue = totalSales > 0 ? totalRevenue / totalSales : 0;
   const lowStockCount = products.filter(p => p.stock < 10).length;
@@ -52,12 +55,27 @@ const Dashboard: React.FC = () => {
     const date = subDays(new Date(), i);
     const daySales = sales.filter(sale => {
       if (!sale.timestamp) return false;
-      const saleDate = sale.timestamp.toDate();
-      return isSameDay(saleDate, date);
+      try {
+        const saleDate = typeof sale.timestamp.toDate === 'function' 
+          ? sale.timestamp.toDate() 
+          : new Date(sale.timestamp as any);
+        
+        if (isNaN(saleDate.getTime())) return false;
+        
+        return isSameDay(saleDate, date);
+      } catch (e) {
+        return false;
+      }
     });
+    
+    const revenue = daySales.reduce((sum, s) => {
+      const val = parseFloat(s.total as any);
+      return sum + (isNaN(val) ? 0 : val);
+    }, 0);
+
     return {
       name: format(date, 'MMM dd'),
-      revenue: daySales.reduce((sum, s) => sum + s.total, 0),
+      revenue: revenue,
       count: daySales.length
     };
   }).reverse();
@@ -151,7 +169,17 @@ const Dashboard: React.FC = () => {
                   <div>
                     <p className="font-semibold text-slate-800 text-sm">Order #{sale.id.slice(-4)}</p>
                     <p className="text-xs text-slate-500">
-                      {sale.timestamp ? format(sale.timestamp.toDate(), 'HH:mm a') : 'Just now'}
+                      {(() => {
+                        if (!sale.timestamp) return 'Just now';
+                        try {
+                          const date = typeof sale.timestamp.toDate === 'function' 
+                            ? sale.timestamp.toDate() 
+                            : new Date(sale.timestamp as any);
+                          return format(date, 'HH:mm a');
+                        } catch (e) {
+                          return 'Just now';
+                        }
+                      })()}
                     </p>
                   </div>
                 </div>

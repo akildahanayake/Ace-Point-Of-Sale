@@ -8,21 +8,41 @@ import Reports from './pages/Reports';
 import Accounts from './pages/Accounts';
 import Customers from './pages/Customers';
 import Branches from './pages/Branches';
+import Users from './pages/Users';
 import Settings from './pages/Settings';
 import { Toaster } from 'sonner';
 import { motion, AnimatePresence } from 'motion/react';
 import Sidebar from './components/Sidebar';
+import EntryGate from './components/EntryGate';
 
 const AppContent: React.FC = () => {
-  const { user } = useApp();
+  const { user, activeWorkPeriod } = useApp();
   const [activeTab, setActiveTab] = React.useState('pos');
+  const [hasEntered, setHasEntered] = React.useState(false);
+
+  React.useEffect(() => {
+    if (user) {
+      const isAdminOrManager = user.role === 'admin' || user.role === 'manager';
+      setActiveTab(isAdminOrManager ? 'dashboard' : 'pos');
+      setHasEntered(isAdminOrManager);
+    } else {
+      setHasEntered(false);
+    }
+  }, [user]);
 
   if (!user) {
     return <Login />;
   }
 
-  // If user is cashier, only show POS
-  if (user.role === 'cashier') {
+  // Staff roles (Cashier/Waiter) must go through the EntryGate
+  const isStaff = user.role === 'cashier' || user.role === 'waiter';
+  
+  if (isStaff && !hasEntered) {
+    return <EntryGate onEnter={() => setHasEntered(true)} />;
+  }
+
+  // If user is staff, only show POS
+  if (isStaff) {
     return <POS />;
   }
 
@@ -34,6 +54,7 @@ const AppContent: React.FC = () => {
       case 'accounts': return <Accounts />;
       case 'customers': return <Customers />;
       case 'branches': return <Branches />;
+      case 'users': return <Users />;
       case 'reports': return <Reports />;
       case 'settings': return <Settings />;
       default: return <Dashboard />;

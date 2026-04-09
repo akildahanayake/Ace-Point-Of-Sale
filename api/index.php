@@ -102,6 +102,53 @@ try {
             }
             break;
 
+        case 'settings':
+            // Ensure settings table exists
+            $pdo->exec("CREATE TABLE IF NOT EXISTS settings (
+                id INT PRIMARY KEY,
+                company_name TEXT,
+                company_trn TEXT,
+                address TEXT,
+                phone TEXT,
+                email TEXT,
+                whatsapp TEXT,
+                facebook TEXT,
+                instagram TEXT,
+                currency_name TEXT,
+                currency_sign TEXT,
+                currency_prefix INT DEFAULT 1,
+                tax_percentage FLOAT DEFAULT 0,
+                service_charge FLOAT DEFAULT 0
+            )");
+
+            // Check if default settings exist
+            $stmt = $pdo->query("SELECT COUNT(*) FROM settings");
+            if ($stmt->fetchColumn() == 0) {
+                $pdo->exec("INSERT INTO settings (id, company_name, currency_name, currency_sign, tax_percentage) VALUES (1, 'Ace Point Of Sale', 'US Dollar', '$', 10)");
+            }
+
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM settings WHERE id = 1");
+                echo json_encode($stmt->fetch() ?: (object)[]);
+            } elseif ($method === 'POST' || $method === 'PUT') {
+                $data = json_decode(file_get_contents("php://input"), true);
+                $sql = "UPDATE settings SET 
+                    company_name = ?, company_trn = ?, address = ?, phone = ?, 
+                    email = ?, whatsapp = ?, facebook = ?, instagram = ?, 
+                    currency_name = ?, currency_sign = ?, currency_prefix = ?, 
+                    tax_percentage = ?, service_charge = ?
+                    WHERE id = 1";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    $data['company_name'], $data['company_trn'], $data['address'], $data['phone'], 
+                    $data['email'], $data['whatsapp'], $data['facebook'], $data['instagram'], 
+                    $data['currency_name'], $data['currency_sign'], $data['currency_prefix'] ? 1 : 0, 
+                    $data['tax_percentage'], $data['service_charge']
+                ]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
         case 'customers':
             if ($method === 'GET') {
                 $stmt = $pdo->query("SELECT * FROM customers ORDER BY name");
@@ -118,6 +165,12 @@ try {
         case 'checkout':
             if ($method === 'POST') {
                 $data = json_decode(file_get_contents("php://input"), true);
+                
+                // Get tax rate from settings
+                $stmtSettings = $pdo->query("SELECT tax_percentage FROM settings WHERE id = 1");
+                $taxRate = $stmtSettings->fetchColumn() ?: 10;
+                $taxFactor = 1 + ($taxRate / 100);
+
                 $pdo->beginTransaction();
                 try {
                     $orderNumber = 'ORD-' . time();
@@ -125,7 +178,7 @@ try {
                     $stmtOrder = $pdo->prepare($sqlOrder);
                     $stmtOrder->execute([
                         $data['branch_id'], $data['user_id'], $data['customer_id'] ?? null, $orderNumber, 
-                        $data['total'] / 1.10, $data['total'], $data['payment_method']
+                        $data['total'] / $taxFactor, $data['total'], $data['payment_method']
                     ]);
                     $orderId = $pdo->lastInsertId();
 
@@ -352,6 +405,58 @@ try {
                 $data = json_decode(file_get_contents("php://input"), true);
                 $pdo->beginTransaction();
                 try {
+                    $table = $data['item_type'] === 'product' ? 'products' : 'inventory_items';
+                    $column = $data['item_type'] === 'product' ? 'stock_quantity' : 'stock';
+                    
+                    // 1. Get source item details
+                    $stmtSource = $pdo->prepare("SELECT * FROM $table WHERE id = ? AND branch_id = ?");
+                    $stmtSource->execute([$data['item_id'], $data['from_branch_id']]);
+                    $sourceItem = $stmtSource->fetch();
+                    
+                    if (!$sourceItem) {
+                        throw new Exception("Source item not found in specified branch");
+                    }
+
+                    // 2. Find or create destination item
+                    $destItemId = null;
+                    if ($data['item_type'] === 'product') {
+                        $stmtDest = $pdo->prepare("SELECT id FROM products WHERE branch_id = ? AND (sku = ? OR name = ?)");
+                        $stmtDest->execute([$data['to_branch_id'], $sourceItem['sku'], $sourceItem['name']]);
+                    } else {
+                        $stmtDest = $pdo->prepare("SELECT id FROM inventory_items WHERE branch_id = ? AND name = ?");
+                        $stmtDest->execute([$data['to_branch_id'], $sourceItem['name']]);
+                    }
+                    $destItem = $stmtDest->fetch();
+
+                    if ($destItem) {
+                        $destItemId = $destItem['id'];
+                        // Update existing
+                        $stmtUpdateDest = $pdo->prepare("UPDATE $table SET $column = $column + ? WHERE id = ?");
+                        $stmtUpdateDest->execute([$data['quantity'], $destItemId]);
+                    } else {
+                        // Create new in destination branch
+                        if ($data['item_type'] === 'product') {
+                            $stmtInsertDest = $pdo->prepare("INSERT INTO products (branch_id, name, price, category_id, stock_quantity, sku, image_url, expiry_date) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                            $stmtInsertDest->execute([
+                                $data['to_branch_id'], $sourceItem['name'], $sourceItem['price'], 
+                                $sourceItem['category_id'], $data['quantity'], $sourceItem['sku'], 
+                                $sourceItem['image_url'], $sourceItem['expiry_date']
+                            ]);
+                        } else {
+                            $stmtInsertDest = $pdo->prepare("INSERT INTO inventory_items (branch_id, name, base_unit, cost, stock) VALUES (?, ?, ?, ?, ?)");
+                            $stmtInsertDest->execute([
+                                $data['to_branch_id'], $sourceItem['name'], $sourceItem['base_unit'], 
+                                $sourceItem['cost'], $data['quantity']
+                            ]);
+                        }
+                        $destItemId = $pdo->lastInsertId();
+                    }
+
+                    // 3. Deduct from source
+                    $stmtDeduct = $pdo->prepare("UPDATE $table SET $column = $column - ? WHERE id = ?");
+                    $stmtDeduct->execute([$data['quantity'], $data['item_id']]);
+
+                    // 4. Record transfer
                     $sql = "INSERT INTO stock_transfers (item_id, item_type, from_branch_id, to_branch_id, quantity, user_id) VALUES (?, ?, ?, ?, ?, ?)";
                     $stmt = $pdo->prepare($sql);
                     $stmt->execute([
@@ -359,24 +464,296 @@ try {
                         $data['to_branch_id'], $data['quantity'], $data['user_id']
                     ]);
                     
-                    $table = $data['item_type'] === 'product' ? 'products' : 'inventory_items';
-                    $column = $data['item_type'] === 'product' ? 'stock_quantity' : 'stock';
-                    
-                    // Deduct from source
-                    $sqlDeduct = "UPDATE $table SET $column = $column - ? WHERE id = ? AND branch_id = ?";
-                    $stmtDeduct = $pdo->prepare($sqlDeduct);
-                    $stmtDeduct->execute([$data['quantity'], $data['item_id'], $data['from_branch_id']]);
-                    
-                    // Add to destination
-                    $sqlAdd = "UPDATE $table SET $column = $column + ? WHERE id = ? AND branch_id = ?";
-                    $stmtAdd = $pdo->prepare($sqlAdd);
-                    $stmtAdd->execute([$data['quantity'], $data['item_id'], $data['to_branch_id']]);
-                    
                     $pdo->commit();
                     echo json_encode(['id' => $pdo->lastInsertId()]);
                 } catch (Exception $e) {
                     $pdo->rollBack();
-                    throw $e;
+                    http_response_code(400);
+                    echo json_encode(['error' => $e->getMessage()]);
+                }
+            }
+            break;
+
+        case 'users':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM users ORDER BY name");
+                echo json_encode($stmt->fetchAll());
+            } elseif ($method === 'POST') {
+                $data = json_decode(file_get_contents("php://input"), true);
+                
+                // Check for duplicate emp_no
+                if (isset($data['emp_no']) && $data['emp_no']) {
+                    $stmtCheck = $pdo->prepare("SELECT id FROM users WHERE emp_no = ?");
+                    $stmtCheck->execute([$data['emp_no']]);
+                    if ($stmtCheck->fetch()) {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Employee number already exists']);
+                        break;
+                    }
+                }
+
+                // Check for duplicate username
+                if (isset($data['username']) && $data['username']) {
+                    $stmtCheck = $pdo->prepare("SELECT id FROM users WHERE username = ?");
+                    $stmtCheck->execute([$data['username']]);
+                    if ($stmtCheck->fetch()) {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Username already exists']);
+                        break;
+                    }
+                }
+
+                $sql = "INSERT INTO users (name, email, role, phone, address, emp_no, id_number, username, password, joined_date, branch_ids, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    $data['name'], $data['email'], $data['role'], $data['phone'] ?? null,
+                    $data['address'] ?? null, $data['emp_no'] ?? null, $data['id_number'] ?? null,
+                    $data['username'] ?? null, $data['password'] ?? null,
+                    $data['joined_date'] ?? null, $data['branch_ids'] ?? '[]', $data['is_active'] ?? 1
+                ]);
+                echo json_encode(['id' => $pdo->lastInsertId()]);
+            }
+            break;
+
+        case 'update_user':
+            if ($method === 'PUT' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $data = json_decode(file_get_contents("php://input"), true);
+                
+                // Check for duplicate emp_no
+                if (isset($data['emp_no']) && $data['emp_no']) {
+                    $stmtCheck = $pdo->prepare("SELECT id FROM users WHERE emp_no = ? AND id != ?");
+                    $stmtCheck->execute([$data['emp_no'], $id]);
+                    if ($stmtCheck->fetch()) {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Employee number already exists']);
+                        break;
+                    }
+                }
+
+                // Check for duplicate username
+                if (isset($data['username']) && $data['username']) {
+                    $stmtCheck = $pdo->prepare("SELECT id FROM users WHERE username = ? AND id != ?");
+                    $stmtCheck->execute([$data['username'], $id]);
+                    if ($stmtCheck->fetch()) {
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Username already exists']);
+                        break;
+                    }
+                }
+
+                // Get current user for partial updates
+                $stmtCurrent = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+                $stmtCurrent->execute([$id]);
+                $currentUser = $stmtCurrent->fetch();
+                
+                if (!$currentUser) {
+                    http_response_code(404);
+                    echo json_encode(['error' => 'User not found']);
+                    break;
+                }
+
+                $sql = "UPDATE users SET name = ?, email = ?, role = ?, phone = ?, address = ?, emp_no = ?, id_number = ?, username = ?, password = ?, joined_date = ?, branch_ids = ?, is_active = ? WHERE id = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    $data['name'] ?? $currentUser['name'],
+                    $data['email'] ?? $currentUser['email'],
+                    $data['role'] ?? $currentUser['role'],
+                    $data['phone'] ?? $currentUser['phone'],
+                    $data['address'] ?? $currentUser['address'],
+                    $data['emp_no'] ?? $currentUser['emp_no'],
+                    $data['id_number'] ?? $currentUser['id_number'],
+                    $data['username'] ?? $currentUser['username'],
+                    $data['password'] ?? $currentUser['password'],
+                    $data['joined_date'] ?? $currentUser['joined_date'],
+                    $data['branch_ids'] ?? $currentUser['branch_ids'],
+                    isset($data['is_active']) ? $data['is_active'] : $currentUser['is_active'],
+                    $id
+                ]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'delete_user':
+            if ($method === 'DELETE' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $sql = "DELETE FROM users WHERE id = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$id]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'login':
+            if ($method === 'POST') {
+                $data = json_decode(file_get_contents("php://input"), true);
+                $stmt = $pdo->prepare("SELECT * FROM users WHERE email = ? AND password = ? AND is_active = 1");
+                $stmt->execute([$data['email'], $data['password']]);
+                $u = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($u) {
+                    echo json_encode([
+                        'id' => $u['id'],
+                        'name' => $u['name'],
+                        'email' => $u['email'],
+                        'role' => $u['role'],
+                        'branchIds' => $u['branch_ids'] ? json_decode($u['branch_ids']) : [],
+                        'isActive' => $u['is_active'] == 1,
+                        'empNo' => $u['emp_no'],
+                        'joinedDate' => $u['joined_date']
+                    ]);
+                } else {
+                    http_response_code(401);
+                    echo json_encode(['error' => 'Invalid credentials']);
+                }
+            }
+            break;
+
+        case 'export_sql':
+            if ($method === 'GET') {
+                try {
+                    $stmt = $pdo->query("SHOW TABLES");
+                    $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                    
+                    $sqlDump = "SET FOREIGN_KEY_CHECKS = 0;\n";
+                    foreach ($tables as $table) {
+                        $sqlDump .= "\n-- Table: $table\n";
+                        $sqlDump .= "DELETE FROM `$table`;\n";
+                        
+                        $stmt = $pdo->query("SELECT * FROM `$table` ");
+                        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                        
+                        if (count($rows) > 0) {
+                            $keys = array_keys($rows[0]);
+                            $columns = implode(', ', array_map(function($c) { return "`$c`"; }, $keys));
+                            
+                            foreach ($rows as $row) {
+                                $values = array_map(function($val) {
+                                    if ($val === null) return 'NULL';
+                                    return "'" . str_replace("'", "''", $val) . "'";
+                                }, array_values($row));
+                                $sqlDump .= "INSERT INTO `$table` ($columns) VALUES (" . implode(', ', $values) . ");\n";
+                            }
+                        }
+                    }
+                    $sqlDump .= "\nSET FOREIGN_KEY_CHECKS = 1;";
+                    $sqlDump .= "\n-- END OF BACKUP --";
+                    header('Content-Type: text/plain');
+                    echo $sqlDump;
+                } catch (Exception $e) {
+                    http_response_code(500);
+                    echo json_encode(['error' => 'SQL Export failed: ' . $e->getMessage()]);
+                }
+            }
+            break;
+
+        case 'import_sql':
+            if ($method === 'POST') {
+                $data = json_decode(file_get_contents("php://input"), true);
+                $sql = $data['sql'] ?? '';
+                if (!$sql) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'No SQL provided']);
+                    break;
+                }
+                
+                if (strpos($sql, "-- END OF BACKUP --") === false) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'The backup file appears to be incomplete or truncated. Please try generating a new backup.']);
+                    break;
+                }
+                
+                try {
+                    $pdo->exec($sql);
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    http_response_code(500);
+                    echo json_encode(['error' => 'SQL Import failed: ' . $e->getMessage()]);
+                }
+            }
+            break;
+
+        case 'export_data':
+            if ($method === 'GET') {
+                try {
+                    $stmt = $pdo->query("SHOW TABLES");
+                    $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+                    
+                    $backup = [];
+                    foreach ($tables as $table) {
+                        $stmt = $pdo->query("SELECT * FROM `$table`");
+                        $backup[$table] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+                    }
+                    $backup['_metadata'] = [
+                        'timestamp' => date('c'),
+                        'isComplete' => true
+                    ];
+                    echo json_encode($backup);
+                } catch (Exception $e) {
+                    http_response_code(500);
+                    echo json_encode(['error' => 'Export failed: ' . $e->getMessage()]);
+                }
+            }
+            break;
+
+        case 'import_data':
+            if ($method === 'POST') {
+                $backup = json_decode(file_get_contents("php://input"), true);
+                if (!$backup || !is_array($backup)) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'Invalid JSON data']);
+                    break;
+                }
+
+                if (!isset($backup['_metadata']) || !$backup['_metadata']['isComplete']) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'The backup file appears to be incomplete or corrupted. Please try generating a new backup.']);
+                    break;
+                }
+                
+                try {
+                    // Get all current tables
+                    $stmt = $pdo->query("SHOW TABLES");
+                    $currentTables = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+                    $pdo->beginTransaction();
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+                    
+                    // 1. Clear all current tables
+                    foreach ($currentTables as $table) {
+                        $pdo->exec("DELETE FROM `$table` ");
+                    }
+
+                    // 2. Restore from backup
+                    foreach ($backup as $table => $rows) {
+                        if (is_array($rows) && count($rows) > 0) {
+                            // Check if table exists in current database
+                            if (in_array($table, $currentTables)) {
+                                // Get columns for this table
+                                $stmtCols = $pdo->query("DESCRIBE `$table` ");
+                                $tableColumns = $stmtCols->fetchAll(PDO::FETCH_COLUMN);
+
+                                $keys = array_intersect(array_keys($rows[0]), $tableColumns);
+                                if (empty($keys)) continue;
+
+                                $columns = implode(', ', array_map(function($c) { return "`$c`"; }, $keys));
+                                $placeholders = implode(', ', array_fill(0, count($keys), '?'));
+                                $stmt = $pdo->prepare("INSERT INTO `$table` ($columns) VALUES ($placeholders)");
+                                foreach ($rows as $row) {
+                                    $values = array_map(function($k) use ($row) { return $row[$k] ?? null; }, $keys);
+                                    $stmt->execute($values);
+                                }
+                            }
+                        }
+                    }
+                    
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                    $pdo->commit();
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    if ($pdo->inTransaction()) $pdo->rollBack();
+                    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+                    http_response_code(500);
+                    echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
                 }
             }
             break;
