@@ -28,6 +28,14 @@ try {
     )");
 } catch (Exception $e) {}
 
+// Ensure orders and order_items have necessary columns
+try {
+    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS tax_amount FLOAT DEFAULT 0");
+    $pdo->exec("ALTER TABLE orders ADD COLUMN IF NOT EXISTS service_charge_amount FLOAT DEFAULT 0");
+    $pdo->exec("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS product_name TEXT");
+    $pdo->exec("ALTER TABLE order_items ADD COLUMN IF NOT EXISTS tags TEXT");
+} catch (Exception $e) {}
+
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 
@@ -263,20 +271,24 @@ try {
                 $pdo->beginTransaction();
                 try {
                     $orderNumber = 'ORD-' . time();
-                    $sqlOrder = "INSERT INTO orders (branch_id, user_id, customer_id, order_number, subtotal, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'completed')";
+                    $taxAmount = $data['total'] - ($data['total'] / $taxFactor);
+                    $serviceChargeAmount = ($data['total'] / $taxFactor) * ($serviceChargeRate / 100);
+                    
+                    $sqlOrder = "INSERT INTO orders (branch_id, user_id, customer_id, order_number, subtotal, grand_total, tax_amount, service_charge_amount, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'completed')";
                     $stmtOrder = $pdo->prepare($sqlOrder);
                     $stmtOrder->execute([
                         $data['branch_id'], $data['user_id'], $data['customer_id'] ?? null, $orderNumber, 
-                        $data['total'] / $taxFactor, $data['total'], $data['payment_method']
+                        $data['total'] / $taxFactor, $data['total'], $taxAmount, $serviceChargeAmount, $data['payment_method']
                     ]);
                     $orderId = $pdo->lastInsertId();
 
                     foreach ($data['items'] as $item) {
-                        $sqlItem = "INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)";
+                        $sqlItem = "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, total_price, tags) VALUES (?, ?, ?, ?, ?, ?, ?)";
                         $stmtItem = $pdo->prepare($sqlItem);
                         $stmtItem->execute([
-                            $orderId, $item['productId'], $item['quantity'], 
-                            $item['price'], $item['price'] * $item['quantity']
+                            $orderId, $item['productId'], $item['name'], $item['quantity'], 
+                            $item['price'], $item['price'] * $item['quantity'],
+                            isset($item['tags']) ? json_encode($item['tags']) : null
                         ]);
 
                         $sqlStock = "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?";
@@ -564,7 +576,7 @@ try {
                 $sales = $stmt->fetchAll();
                 
                 foreach ($sales as &$sale) {
-                    $stmtItems = $pdo->prepare("SELECT oi.*, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?");
+                    $stmtItems = $pdo->prepare("SELECT oi.*, COALESCE(p.name, oi.product_name, 'Unknown Product') as name FROM order_items oi LEFT JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?");
                     $stmtItems->execute([$sale['id']]);
                     $sale['items'] = $stmtItems->fetchAll();
                 }

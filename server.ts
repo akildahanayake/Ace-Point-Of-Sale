@@ -6,13 +6,31 @@ import mysql from "mysql2/promise";
 import Database from "better-sqlite3";
 import dotenv from "dotenv";
 import fs from "fs";
+import multer from "multer";
 
 dotenv.config();
 
 const app = express();
 const PORT = 3000;
 
+// Configure multer for QR code uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const uploadDir = path.join(process.cwd(), 'public', 'uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'qr-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+const upload = multer({ storage: storage });
+
 app.use(cors());
+app.use('/uploads', express.static(path.join(process.cwd(), 'public', 'uploads')));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -197,6 +215,14 @@ async function initDb() {
           user_id INTEGER NOT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        CREATE TABLE IF NOT EXISTS crypto_wallets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          network TEXT NOT NULL,
+          address TEXT NOT NULL,
+          qr_code_url TEXT,
+          is_active INTEGER DEFAULT 1
+        );
         CREATE TABLE IF NOT EXISTS settings (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           company_name TEXT,
@@ -289,6 +315,33 @@ async function initDb() {
         if (!uColumnNames.includes('role')) {
           sqliteDb.prepare("ALTER TABLE users ADD COLUMN role TEXT").run();
         }
+
+        // Migration for branches
+        const bColumns = sqliteDb.prepare("PRAGMA table_info(branches)").all();
+        const bColumnNames = bColumns.map((c: any) => c.name);
+        if (!bColumnNames.includes('receipt_template')) {
+          sqliteDb.prepare("ALTER TABLE branches ADD COLUMN receipt_template TEXT").run();
+        }
+
+        // Migration for orders
+        const oColumns = sqliteDb.prepare("PRAGMA table_info(orders)").all();
+        const oColumnNames = oColumns.map((c: any) => c.name);
+        if (!oColumnNames.includes('tax_amount')) {
+          sqliteDb.prepare("ALTER TABLE orders ADD COLUMN tax_amount REAL DEFAULT 0.00").run();
+        }
+        if (!oColumnNames.includes('service_charge_amount')) {
+          sqliteDb.prepare("ALTER TABLE orders ADD COLUMN service_charge_amount REAL DEFAULT 0.00").run();
+        }
+
+        // Migration for order_items
+        const oiColumns = sqliteDb.prepare("PRAGMA table_info(order_items)").all();
+        const oiColumnNames = oiColumns.map((c: any) => c.name);
+        if (!oiColumnNames.includes('product_name')) {
+          sqliteDb.prepare("ALTER TABLE order_items ADD COLUMN product_name TEXT").run();
+        }
+        if (!oiColumnNames.includes('tags')) {
+          sqliteDb.prepare("ALTER TABLE order_items ADD COLUMN tags TEXT").run();
+        }
       } catch (e) {
         console.error("Migration failed:", e);
       }
@@ -324,7 +377,7 @@ async function query(sql: string, params: any[] = []) {
 }
 
 // API Routes (PHP-style routing for preview)
-app.all("/api/index.php", async (req, res) => {
+app.all("/api/index.php", upload.single('qr_code'), async (req, res) => {
   const action = req.query.action;
   const method = req.method;
   console.log(`API Request: ${method} ${action}`);
@@ -397,6 +450,33 @@ app.all("/api/index.php", async (req, res) => {
         if (method === 'GET') {
           const [rows] = await query("SELECT * FROM categories ORDER BY name");
           res.json(rows);
+        } else if (method === 'POST') {
+          const { branch_id, name, color } = req.body;
+          const [result] = await query(
+            "INSERT INTO categories (branch_id, name, color) VALUES (?, ?, ?)",
+            [branch_id, name, color]
+          );
+          res.json({ id: result.insertId });
+        }
+        break;
+
+      case 'update_category':
+        if (method === 'PUT' || method === 'POST') {
+          const id = req.query.id;
+          const { name, color } = req.body;
+          await query(
+            "UPDATE categories SET name = ?, color = ? WHERE id = ?",
+            [name, color, id]
+          );
+          res.json({ success: true });
+        }
+        break;
+
+      case 'delete_category':
+        if (method === 'DELETE' || method === 'POST') {
+          const id = req.query.id;
+          await query("DELETE FROM categories WHERE id = ?", [id]);
+          res.json({ success: true });
         }
         break;
 
@@ -434,6 +514,40 @@ app.all("/api/index.php", async (req, res) => {
         }
         break;
 
+      case 'crypto_wallets':
+        if (method === 'GET') {
+          const [rows] = await query("SELECT * FROM crypto_wallets WHERE is_active = 1 ORDER BY name");
+          res.json(rows);
+        } else if (method === 'POST') {
+          const { name, network, address, qr_code_url } = req.body;
+          const [result] = await query(
+            "INSERT INTO crypto_wallets (name, network, address, qr_code_url) VALUES (?, ?, ?, ?)",
+            [name, network, address, qr_code_url]
+          );
+          res.json({ id: result.insertId });
+        }
+        break;
+
+      case 'update_crypto_wallet':
+        if (method === 'PUT' || method === 'POST') {
+          const id = req.query.id;
+          const { name, network, address, qr_code_url } = req.body;
+          await query(
+            "UPDATE crypto_wallets SET name = ?, network = ?, address = ?, qr_code_url = ? WHERE id = ?",
+            [name, network, address, qr_code_url, id]
+          );
+          res.json({ success: true });
+        }
+        break;
+
+      case 'delete_crypto_wallet':
+        if (method === 'DELETE' || method === 'POST') {
+          const id = req.query.id;
+          await query("UPDATE crypto_wallets SET is_active = 0 WHERE id = ?", [id]);
+          res.json({ success: true });
+        }
+        break;
+
       case 'customers':
         if (method === 'GET') {
           const [rows] = await query("SELECT * FROM customers ORDER BY name");
@@ -448,27 +562,51 @@ app.all("/api/index.php", async (req, res) => {
         }
         break;
 
+      case 'update_customer':
+        if (method === 'PUT' || method === 'POST') {
+          const id = req.query.id;
+          const { name, email, phone, address } = req.body;
+          await query(
+            "UPDATE customers SET name = ?, email = ?, phone = ?, address = ? WHERE id = ?",
+            [name, email, phone, address, id]
+          );
+          res.json({ success: true });
+        }
+        break;
+
+      case 'delete_customer':
+        if (method === 'DELETE' || method === 'POST') {
+          const id = req.query.id;
+          await query("DELETE FROM customers WHERE id = ?", [id]);
+          res.json({ success: true });
+        }
+        break;
+
       case 'checkout':
         if (method === 'POST') {
           const { branch_id, user_id, items, total, payment_method } = req.body;
           const orderNumber = `ORD-${Date.now()}`;
           
-          // Get tax rate from settings
-          const [settingsRows] = await query("SELECT tax_percentage FROM settings WHERE id = 1");
-          const taxRate = settingsRows[0]?.tax_percentage || 10;
-          const taxFactor = 1 + (taxRate / 100);
+          // Get tax rate and service charge from settings
+          const [settingsRows] = await query("SELECT tax_percentage, service_charge FROM settings WHERE id = 1");
+          const taxRate = settingsRows[0]?.tax_percentage || 0;
+          const serviceChargeRate = settingsRows[0]?.service_charge || 0;
+          
+          const subtotal = total / (1 + (taxRate + serviceChargeRate) / 100);
+          const taxAmount = subtotal * (taxRate / 100);
+          const serviceChargeAmount = subtotal * (serviceChargeRate / 100);
 
           if (isUsingSqlite) {
             const transaction = sqliteDb.transaction(() => {
               const orderResult = sqliteDb.prepare(
-                "INSERT INTO orders (branch_id, user_id, order_number, subtotal, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, 'completed')"
-              ).run(branch_id, user_id, orderNumber, total / taxFactor, total, payment_method);
+                "INSERT INTO orders (branch_id, user_id, order_number, subtotal, tax_amount, service_charge_amount, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed')"
+              ).run(branch_id, user_id, orderNumber, subtotal, taxAmount, serviceChargeAmount, total, payment_method);
               
               const orderId = orderResult.lastInsertRowid;
               for (const item of items) {
                 sqliteDb.prepare(
-                  "INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)"
-                ).run(orderId, item.productId, item.quantity, item.price, item.price * item.quantity);
+                  "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, total_price, tags) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                ).run(orderId, item.productId, item.name, item.quantity, item.price, item.price * item.quantity, JSON.stringify(item.tags || []));
                 
                 sqliteDb.prepare(
                   "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?"
@@ -483,14 +621,14 @@ app.all("/api/index.php", async (req, res) => {
             try {
               await connection.beginTransaction();
               const [orderResult] = await connection.query(
-                "INSERT INTO orders (branch_id, user_id, order_number, subtotal, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, 'completed')",
-                [branch_id, user_id, orderNumber, total / taxFactor, total, payment_method]
+                "INSERT INTO orders (branch_id, user_id, order_number, subtotal, tax_amount, service_charge_amount, grand_total, payment_method, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed')",
+                [branch_id, user_id, orderNumber, subtotal, taxAmount, serviceChargeAmount, total, payment_method]
               );
               const orderId = orderResult.insertId;
               for (const item of items) {
                 await connection.query(
-                  "INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price) VALUES (?, ?, ?, ?, ?)",
-                  [orderId, item.productId, item.quantity, item.price, item.price * item.quantity]
+                  "INSERT INTO order_items (order_id, product_id, product_name, quantity, unit_price, total_price, tags) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                  [orderId, item.productId, item.name, item.quantity, item.price, item.price * item.quantity, JSON.stringify(item.tags || [])]
                 );
                 await connection.query(
                   "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
@@ -591,6 +729,26 @@ app.all("/api/index.php", async (req, res) => {
         }
         break;
 
+      case 'update_account':
+        if (method === 'PUT' || method === 'POST') {
+          const id = req.query.id;
+          const { name, type, balance } = req.body;
+          await query(
+            "UPDATE accounts SET name = ?, type = ?, balance = ? WHERE id = ?",
+            [name, type, balance, id]
+          );
+          res.json({ success: true });
+        }
+        break;
+
+      case 'delete_account':
+        if (method === 'DELETE' || method === 'POST') {
+          const id = req.query.id;
+          await query("DELETE FROM accounts WHERE id = ?", [id]);
+          res.json({ success: true });
+        }
+        break;
+
       case 'transactions':
         if (method === 'GET') {
           const [rows] = await query(
@@ -629,8 +787,34 @@ app.all("/api/index.php", async (req, res) => {
 
       case 'sales':
         if (method === 'GET') {
-          const [rows] = await query("SELECT * FROM orders ORDER BY created_at DESC");
-          res.json(rows);
+          const [orders] = await query("SELECT * FROM orders ORDER BY created_at DESC");
+          const salesWithItems = [];
+          for (const order of orders) {
+            const [items] = await query(`
+              SELECT oi.*, COALESCE(p.name, oi.product_name) as name 
+              FROM order_items oi 
+              LEFT JOIN products p ON oi.product_id = p.id 
+              WHERE oi.order_id = ?
+            `, [order.id]);
+            salesWithItems.push({
+              ...order,
+              items: items.map((item: any) => ({
+                ...item,
+                tags: item.tags ? JSON.parse(item.tags) : []
+              }))
+            });
+          }
+          res.json(salesWithItems);
+        }
+        break;
+
+      case 'upload_qr':
+        if (method === 'POST') {
+          if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+          }
+          const url = `/uploads/${req.file.filename}`;
+          res.json({ url });
         }
         break;
 
@@ -801,7 +985,7 @@ app.all("/api/index.php", async (req, res) => {
             }
           }
 
-          // Get current user to handle partial updates if needed, but here we just handle is_active default
+          // Get current user to handle partial updates
           const [currentUsers] = await query("SELECT * FROM users WHERE id = ?", [id]);
           if (currentUsers.length === 0) return res.status(404).json({ error: "User not found" });
           const currentUser = currentUsers[0];
@@ -833,7 +1017,7 @@ app.all("/api/index.php", async (req, res) => {
       case 'delete_user':
         if (method === 'DELETE' || method === 'POST') {
           const id = req.query.id;
-          await query("DELETE FROM users WHERE id = ?", [id]);
+          await query("UPDATE users SET is_active = 0 WHERE id = ?", [id]);
           res.json({ success: true });
         }
         break;

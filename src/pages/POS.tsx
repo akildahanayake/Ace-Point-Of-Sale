@@ -265,7 +265,10 @@ const POS: React.FC = () => {
 
     const itemsHtml = saleData.items.map((item: any) => `
       <tr>
-        <td style="padding: 2px 0;">${item.name}</td>
+        <td style="padding: 2px 0;">
+          <div style="font-weight: bold;">${item.name}</div>
+          ${(item.tags || item.appliedTags || []).length > 0 ? `<div style="font-size: 0.7rem; color: #666;">${(item.tags || item.appliedTags || []).map((t: any) => t.name).join(', ')}</div>` : ''}
+        </td>
         <td style="text-align: center;">${item.quantity}</td>
         <td style="text-align: right;">${formatCurrency((item.price + (item.tags || item.appliedTags || []).reduce((s: number, t: any) => s + t.price, 0)) * item.quantity)}</td>
       </tr>
@@ -283,7 +286,7 @@ const POS: React.FC = () => {
       .replace('{{subtotal}}', formatCurrency(saleData.subtotal))
       .replace('{{tax}}', formatCurrency(saleData.tax))
       .replace('{{taxPercentage}}', (settings?.tax_percentage || 0).toString())
-      .replace('{{serviceCharge}}', formatCurrency(saleData.total - saleData.subtotal - saleData.tax))
+      .replace('{{serviceCharge}}', formatCurrency(saleData.serviceCharge || (saleData.total - saleData.subtotal - saleData.tax)))
       .replace('{{serviceChargePercentage}}', (settings?.service_charge || 0).toString())
       .replace('{{total}}', formatCurrency(saleData.total))
       .replace('{{paymentMethod}}', saleData.paymentMethod.toUpperCase());

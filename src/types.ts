@@ -127,6 +127,7 @@ export interface Sale {
   total: number;
   subtotal: number;
   tax: number;
+  serviceCharge?: number;
   paymentMethod: string;
   timestamp: any; // Firestore Timestamp
   status?: 'completed' | 'void';

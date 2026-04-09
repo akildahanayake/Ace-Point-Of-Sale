@@ -79,9 +79,12 @@ const Reports: React.FC = () => {
 
     const itemsHtml = sale.items.map((item: any) => `
       <tr>
-        <td style="padding: 2px 0;">${item.name}</td>
+        <td style="padding: 2px 0;">
+          <div style="font-weight: bold;">${item.name}</div>
+          ${item.tags && item.tags.length > 0 ? `<div style="font-size: 0.7rem; color: #666;">${item.tags.map((t: any) => t.name).join(', ')}</div>` : ''}
+        </td>
         <td style="text-align: center;">${item.quantity}</td>
-        <td style="text-align: right;">${formatCurrency(item.price * item.quantity)}</td>
+        <td style="text-align: right;">${formatCurrency((item.price + (item.tags || []).reduce((s: number, t: any) => s + t.price, 0)) * item.quantity)}</td>
       </tr>
     `).join('');
 
@@ -97,7 +100,7 @@ const Reports: React.FC = () => {
       .replace('{{subtotal}}', formatCurrency(sale.subtotal || sale.total))
       .replace('{{tax}}', formatCurrency(sale.tax || 0))
       .replace('{{taxPercentage}}', (settings?.tax_percentage || 0).toString())
-      .replace('{{serviceCharge}}', formatCurrency(sale.total - (sale.subtotal || sale.total) - (sale.tax || 0)))
+      .replace('{{serviceCharge}}', formatCurrency(sale.serviceCharge || (sale.total - (sale.subtotal || sale.total) - (sale.tax || 0))))
       .replace('{{serviceChargePercentage}}', (settings?.service_charge || 0).toString())
       .replace('{{total}}', formatCurrency(sale.total))
       .replace('{{paymentMethod}}', (sale.paymentMethod || 'CASH').toUpperCase());
@@ -591,6 +594,16 @@ const Reports: React.FC = () => {
                     <span className="text-slate-500">Subtotal</span>
                     <span className="font-medium text-slate-800">{formatCurrency(selectedSale.subtotal)}</span>
                   </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Tax</span>
+                    <span className="font-medium text-slate-800">{formatCurrency(selectedSale.tax)}</span>
+                  </div>
+                  {selectedSale.serviceCharge !== undefined && selectedSale.serviceCharge > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-500">Service Charge</span>
+                      <span className="font-medium text-slate-800">{formatCurrency(selectedSale.serviceCharge)}</span>
+                    </div>
+                  )}
                   <div className="flex justify-between text-lg font-bold">
                     <span className="text-slate-800">Total</span>
                     <span className="text-indigo-600">{formatCurrency(selectedSale.total)}</span>
