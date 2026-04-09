@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { Product, CartItem, Category, OrderTag, Customer } from '../types';
+import { Product, CartItem, Category, OrderTag, Customer, Sale, CryptoWallet } from '../types';
 import { posService } from '../services/posService';
 import { 
   Search, 
@@ -17,13 +17,24 @@ import {
   Banknote,
   Wallet,
   UserPlus,
-  X
+  X,
+  Layers,
+  Printer,
+  QrCode,
+  Scan,
+  RefreshCw,
+  History,
+  Eye
 } from 'lucide-react';
+import { QRCodeCanvas } from 'qrcode.react';
 import { formatCurrency, cn } from '../lib/utils';
+import { format } from 'date-fns';
+import { DEFAULT_RECEIPT_TEMPLATE } from '../constants';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import EntryGate from '../components/EntryGate';
 import { Html5QrcodeScanner } from 'html5-qrcode';
+import { Settings } from '../types';
 
 const POS: React.FC = () => {
   const { currentBranch, branches, switchBranch, user, logout, activeWorkPeriod, startWorkPeriod, endWorkPeriod } = useApp();
@@ -33,6 +44,18 @@ const POS: React.FC = () => {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [customerSearch, setCustomerSearch] = useState('');
+  const [settings, setSettings] = useState<Settings | null>(null);
+  const [selectedCrypto, setSelectedCrypto] = useState<string>('');
+  const [wallets, setWallets] = useState<CryptoWallet[]>([]);
+  const [selectedWallet, setSelectedWallet] = useState<CryptoWallet | null>(null);
+
+  useEffect(() => {
+    const loadSettings = async () => {
+      const data = await posService.getSettings();
+      setSettings(data);
+    };
+    loadSettings();
+  }, []);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -42,17 +65,38 @@ const POS: React.FC = () => {
   const [selectedProductForTags, setSelectedProductForTags] = useState<Product | null>(null);
   const [isPosVisible, setIsPosVisible] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
+  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [pastSales, setPastSales] = useState<any[]>([]);
 
   useEffect(() => {
     const unsubProducts = posService.subscribeToProducts(setProducts);
     const unsubCategories = posService.subscribeToCategories(setCategories);
     const unsubCustomers = posService.subscribeToCustomers(setCustomers);
+    const unsubWallets = posService.subscribeToCryptoWallets((data) => {
+      setWallets(data);
+      if (data.length > 0 && !selectedWallet) {
+        setSelectedWallet(data[0]);
+      }
+    });
+    
+    const loadSettings = async () => {
+      try {
+        const data = await posService.getSettings();
+        setSettings(data);
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+      }
+    };
+    loadSettings();
+
     return () => {
       unsubProducts();
       unsubCategories();
       unsubCustomers();
+      unsubWallets();
     };
-  }, []);
+  }, [selectedWallet]);
 
   useEffect(() => {
     if (showScanner) {
@@ -153,8 +197,12 @@ const POS: React.FC = () => {
   };
 
   const subtotal = cart.reduce((sum, item) => sum + calculateItemPrice(item), 0);
-  const tax = subtotal * 0.10; // 10% Tax
-  const total = subtotal + tax;
+  const taxRate = settings?.tax_percentage || 0;
+  const serviceChargeRate = settings?.service_charge || 0;
+  
+  const tax = subtotal * (taxRate / 100);
+  const serviceCharge = subtotal * (serviceChargeRate / 100);
+  const total = subtotal + tax + serviceCharge;
 
   const handleCheckout = () => {
     if (cart.length === 0) return;
@@ -171,7 +219,7 @@ const POS: React.FC = () => {
         tags: item.appliedTags
       }));
 
-      await posService.processCheckout(
+      const result = await posService.processCheckout(
         saleItems, 
         total, 
         paymentMethod, 
@@ -179,160 +227,279 @@ const POS: React.FC = () => {
         user?.id || '1',
         selectedCustomer?.id
       );
-      toast.success(`Payment of ${formatCurrency(total)} received via ${paymentMethod}`);
-      if (selectedCustomer) {
-        toast.info(`Awarded ${Math.floor(total)} points to ${selectedCustomer.name}`);
+
+      if (result.success) {
+        toast.success(`Payment of ${formatCurrency(total)} received via ${paymentMethod}`);
+        if (selectedCustomer) {
+          toast.info(`Awarded ${Math.floor(total)} points to ${selectedCustomer.name}`);
+        }
+        
+        // Print Receipt
+        handlePrintReceipt({
+          id: result.orderId,
+          orderNumber: result.orderId,
+          items: cart,
+          total,
+          subtotal,
+          tax: tax + serviceCharge,
+          paymentMethod,
+          timestamp: { toDate: () => new Date() }
+        } as any);
+
+        setCart([]);
+        setSelectedCustomer(null);
+        setShowPaymentModal(false);
       }
-      setCart([]);
-      setSelectedCustomer(null);
-      setShowPaymentModal(false);
     } catch (error) {
       toast.error('Failed to process payment');
+    }
+  };
+
+  const handlePrintReceipt = (saleData: Sale) => {
+    toast.info('Printing receipt...');
+    
+    const template = currentBranch?.receiptTemplate || DEFAULT_RECEIPT_TEMPLATE;
+    const dateStr = saleData.timestamp?.toDate 
+      ? saleData.timestamp.toDate().toLocaleString() 
+      : (typeof saleData.timestamp === 'string' ? new Date(saleData.timestamp).toLocaleString() : new Date().toLocaleString());
+
+    const itemsHtml = saleData.items.map((item: any) => `
+      <tr>
+        <td style="padding: 2px 0;">${item.name}</td>
+        <td style="text-align: center;">${item.quantity}</td>
+        <td style="text-align: right;">${formatCurrency((item.price + (item.tags || item.appliedTags || []).reduce((s: number, t: any) => s + t.price, 0)) * item.quantity)}</td>
+      </tr>
+    `).join('');
+
+    const receiptHtml = template
+      .replace('{{companyName}}', settings?.company_name || 'POS RECEIPT')
+      .replace('{{branchName}}', currentBranch?.name || '')
+      .replace('{{branchAddress}}', currentBranch?.address || '')
+      .replace('{{branchPhone}}', currentBranch?.phone || '')
+      .replace('{{orderNumber}}', saleData.orderNumber || saleData.id)
+      .replace('{{date}}', dateStr)
+      .replace('{{cashierName}}', user?.name || 'Staff')
+      .replace('{{items}}', itemsHtml)
+      .replace('{{subtotal}}', formatCurrency(saleData.subtotal))
+      .replace('{{tax}}', formatCurrency(saleData.tax))
+      .replace('{{taxPercentage}}', (settings?.tax_percentage || 0).toString())
+      .replace('{{serviceCharge}}', formatCurrency(saleData.total - saleData.subtotal - saleData.tax))
+      .replace('{{serviceChargePercentage}}', (settings?.service_charge || 0).toString())
+      .replace('{{total}}', formatCurrency(saleData.total))
+      .replace('{{paymentMethod}}', saleData.paymentMethod.toUpperCase());
+
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Receipt #${saleData.orderNumber || saleData.id}</title>
+            <style>
+              @media print {
+                body { margin: 0; padding: 0; width: 80mm; }
+                @page { size: 80mm auto; margin: 0; }
+              }
+              body { margin: 0; padding: 0; }
+            </style>
+          </head>
+          <body>
+            ${receiptHtml}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.print();
     }
   };
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-slate-50">
       {/* Top Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm z-30">
-        <div className="flex items-center gap-6">
+      <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-2 flex items-center justify-between shadow-sm z-30">
+        <div className="flex items-center gap-3 md:gap-6">
           <div className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-200">
-              <Receipt className="text-white" size={24} />
+            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-200">
+              <Receipt className="text-white" size={18} />
             </div>
-            <span className="font-bold text-xl tracking-tight text-slate-800">Ace Point Of Sale</span>
+            <span className="font-bold text-sm md:text-lg tracking-tight text-slate-800 hidden xs:block">Ace POS</span>
           </div>
 
           {/* Current Branch Indicator */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 md:gap-4">
             <button 
               onClick={() => setShowScanner(true)}
-              className="p-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors flex items-center gap-2"
+              className="p-2 bg-indigo-50 text-indigo-600 rounded-lg md:rounded-xl hover:bg-indigo-100 transition-colors flex items-center gap-2"
               title="Scan Barcode/QR Code"
             >
-              <Search size={20} />
-              <span className="text-sm font-bold hidden sm:inline">Scan Code</span>
+              <Search size={18} />
+              <span className="text-xs font-bold hidden md:inline">Scan</span>
             </button>
-            <div className="flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-xl text-slate-700 font-medium">
-              <Building2 size={18} className="text-indigo-600" />
-              {currentBranch?.name}
+            <button 
+              onClick={async () => {
+                const sales = await posService.getSales();
+                // Filter by current branch
+                setPastSales(sales.filter((s: Sale) => s.branch_id?.toString() === currentBranch?.id));
+                setShowHistoryModal(true);
+              }}
+              className="p-2 bg-slate-50 text-slate-600 rounded-lg md:rounded-xl hover:bg-slate-100 transition-colors flex items-center gap-2"
+              title="Past Transactions"
+            >
+              <History size={18} />
+              <span className="text-xs font-bold hidden md:inline">History</span>
+            </button>
+            <div className="flex items-center gap-2 px-3 py-1.5 md:px-4 md:py-2 bg-slate-100 rounded-lg md:rounded-xl text-slate-700 font-medium text-xs md:text-sm">
+              <Building2 size={16} className="text-indigo-600" />
+              <span className="truncate max-w-[80px] md:max-w-none">{currentBranch?.name}</span>
             </div>
-            {user && user.branchIds.length > 1 && (
-              <button 
-                onClick={() => setIsPosVisible(false)}
-                className="text-xs font-bold text-indigo-600 hover:text-indigo-700 underline underline-offset-4"
-              >
-                Switch Branch
-              </button>
-            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 md:gap-4">
           <button 
             onClick={endWorkPeriod}
-            className="px-4 py-2 bg-rose-50 text-rose-600 rounded-xl font-bold text-sm hover:bg-rose-100 transition-colors flex items-center gap-2"
+            className="px-3 py-1.5 md:px-4 md:py-2 bg-rose-50 text-rose-600 rounded-lg md:rounded-xl font-bold text-xs md:text-sm hover:bg-rose-100 transition-colors flex items-center gap-2"
           >
-            End Shift
+            <span className="hidden xs:inline">End Shift</span>
+            <LogOut size={16} className="xs:hidden" />
           </button>
-          <div className="text-right hidden sm:block">
+          <div className="text-right hidden lg:block">
             <p className="text-sm font-bold text-slate-800">{user?.name}</p>
             <p className="text-xs text-slate-500 capitalize">{user?.role}</p>
           </div>
           <button 
             onClick={logout}
-            className="p-2 text-slate-400 hover:text-rose-500 transition-colors"
+            className="p-2 text-slate-400 hover:text-rose-500 transition-colors hidden sm:block"
           >
-            <LogOut size={22} />
+            <LogOut size={20} />
           </button>
         </div>
       </header>
 
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Side: Product Grid */}
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="p-6 space-y-6">
-            <div className="flex flex-col md:flex-row gap-4">
-              <div className="relative flex-1">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
-                <input
-                  type="text"
-                  placeholder="Search products or scan SKU..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-12 pr-4 py-4 bg-white rounded-2xl border-none shadow-sm focus:ring-2 focus:ring-indigo-500 transition-all text-lg"
-                />
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
+      <div className="flex-1 flex overflow-hidden relative">
+        {/* Left Sidebar: Categories (Desktop only) */}
+        <aside className="hidden lg:flex w-56 bg-white border-r border-slate-200 flex-col shrink-0">
+          <div className="p-4 border-b border-slate-100">
+            <h3 className="font-bold text-slate-800 flex items-center gap-2 text-sm">
+              <Layers size={16} className="text-indigo-600" />
+              Categories
+            </h3>
+          </div>
+          <div className="flex-1 overflow-y-auto p-2 space-y-1">
+            <button
+              onClick={() => setSelectedCategory(null)}
+              className={cn(
+                "w-full text-left px-3 py-2 rounded-lg font-bold transition-all text-xs",
+                !selectedCategory ? "bg-indigo-600 text-white shadow-md" : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              All Items
+            </button>
+            {categories.map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(cat.id)}
+                className={cn(
+                  "w-full text-left px-3 py-2 rounded-lg font-bold transition-all text-xs",
+                  selectedCategory === cat.id ? "bg-indigo-600 text-white shadow-md" : "text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                {cat.name}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* Main Content: Search + Product Grid */}
+        <main className="flex-1 flex flex-col min-w-0 bg-slate-50">
+          {/* Mobile Categories (Hidden on lg) */}
+          <div className="lg:hidden p-4 bg-white border-b border-slate-100">
+            <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+              <button
+                onClick={() => setSelectedCategory(null)}
+                className={cn(
+                  "px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all text-sm",
+                  !selectedCategory ? "bg-indigo-600 text-white shadow-md" : "bg-slate-100 text-slate-600"
+                )}
+              >
+                All
+              </button>
+              {categories.map(cat => (
                 <button
-                  onClick={() => setSelectedCategory(null)}
+                  key={cat.id}
+                  onClick={() => setSelectedCategory(cat.id)}
                   className={cn(
-                    "px-6 py-3 rounded-2xl font-bold whitespace-nowrap transition-all",
-                    !selectedCategory ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200" : "bg-white text-slate-600 hover:bg-slate-100"
+                    "px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all text-sm",
+                    selectedCategory === cat.id ? "bg-indigo-600 text-white shadow-md" : "bg-slate-100 text-slate-600"
                   )}
                 >
-                  All Items
+                  {cat.name}
                 </button>
-                {categories.map(cat => (
-                  <button
-                    key={cat.id}
-                    onClick={() => setSelectedCategory(cat.id)}
-                    className={cn(
-                      "px-6 py-3 rounded-2xl font-bold whitespace-nowrap transition-all",
-                      selectedCategory === cat.id ? "bg-indigo-600 text-white shadow-lg shadow-indigo-200" : "bg-white text-slate-600 hover:bg-slate-100"
-                    )}
-                  >
-                    {cat.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4 overflow-y-auto max-h-[calc(100vh-220px)] pb-10 pr-2">
-              {filteredProducts.map(product => (
-                <motion.div
-                  key={product.id}
-                  whileHover={{ y: -4 }}
-                  whileTap={{ scale: 0.95 }}
-                  onClick={() => handleProductClick(product)}
-                  className="bg-white rounded-3xl p-4 shadow-sm border border-slate-100 hover:shadow-md transition-all cursor-pointer group relative overflow-hidden"
-                >
-                  <div className="aspect-square rounded-2xl bg-slate-50 mb-4 overflow-hidden">
-                    <img 
-                      src={product.image} 
-                      alt={product.name} 
-                      className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                  <h3 className="font-bold text-slate-800 truncate">{product.name}</h3>
-                  <p className="text-indigo-600 font-extrabold mt-1">{formatCurrency(product.price)}</p>
-                  <div className="absolute top-2 right-2 bg-white/90 backdrop-blur-sm px-2 py-1 rounded-lg text-[10px] font-bold text-slate-500 shadow-sm">
-                    {product.stock} left
-                  </div>
-                </motion.div>
               ))}
             </div>
           </div>
-        </div>
 
-        {/* Right Side: Cart */}
-        <div className="w-full max-w-md bg-white border-l border-slate-200 flex flex-col shadow-2xl">
-          <div className="p-6 border-b border-slate-100 flex items-center justify-between">
-            <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
-              <ShoppingCart size={24} className="text-indigo-600" />
-              Current Order
+          <div className="p-3 md:p-4 space-y-3 md:space-y-4 flex-1 overflow-hidden flex flex-col">
+            <div className="relative shrink-0">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
+              <input
+                type="text"
+                placeholder="Search products..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-4 py-2 bg-white rounded-xl border-none shadow-sm focus:ring-2 focus:ring-indigo-500 transition-all text-sm"
+              />
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-1 -mr-1">
+              <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 gap-1.5 pb-20">
+                {filteredProducts.map(product => (
+                  <motion.div
+                    key={product.id}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => handleProductClick(product)}
+                    className="bg-white rounded-xl p-2 shadow-sm border border-slate-200 hover:border-indigo-300 transition-all cursor-pointer group relative overflow-hidden"
+                  >
+                    <div className="aspect-square rounded-lg bg-slate-50 mb-1.5 overflow-hidden">
+                      <img 
+                        src={product.image} 
+                        alt={product.name} 
+                        className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                        referrerPolicy="no-referrer"
+                      />
+                    </div>
+                    <h3 className="font-bold text-slate-800 truncate text-[11px] md:text-xs leading-tight">{product.name}</h3>
+                    <p className="text-indigo-600 font-black mt-0.5 text-[11px] md:text-xs">{formatCurrency(product.price)}</p>
+                    <div className="absolute top-1 right-1 bg-white/90 backdrop-blur-sm px-1 py-0.5 rounded text-[8px] font-bold text-slate-500 shadow-sm">
+                      {product.stock}
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </main>
+
+        {/* Right Side: Cart (Desktop) / Drawer (Mobile) */}
+        <aside className={cn(
+          "fixed inset-y-0 right-0 z-50 w-full max-w-md bg-white border-l border-slate-200 flex flex-col shadow-2xl transition-transform duration-300 lg:relative lg:translate-x-0 lg:z-30",
+          isCartOpen ? "translate-x-0" : "translate-x-full lg:translate-x-0"
+        )}>
+          {/* Cart Header */}
+          <div className="p-3 md:p-4 border-b border-slate-100 flex items-center justify-between">
+            <h2 className="text-base md:text-lg font-bold text-slate-800 flex items-center gap-2">
+              <ShoppingCart size={20} className="text-indigo-600" />
+              Order
             </h2>
             <div className="flex items-center gap-2">
               <button 
                 onClick={() => setShowCustomerModal(true)}
                 className={cn(
-                  "p-2 rounded-xl transition-all flex items-center gap-2 text-sm font-bold",
+                  "p-2 rounded-xl transition-all flex items-center gap-2 text-xs md:text-sm font-bold",
                   selectedCustomer ? "bg-emerald-50 text-emerald-600" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
                 )}
               >
                 <User size={18} />
-                {selectedCustomer ? selectedCustomer.name : 'Add Customer'}
+                <span className="hidden sm:inline">{selectedCustomer ? selectedCustomer.name : 'Add Customer'}</span>
               </button>
               <button 
                 onClick={() => setCart([])}
@@ -340,17 +507,23 @@ const POS: React.FC = () => {
               >
                 <Trash2 size={20} />
               </button>
+              <button 
+                onClick={() => setIsCartOpen(false)}
+                className="lg:hidden p-2 text-slate-400 hover:text-slate-600"
+              >
+                <X size={24} />
+              </button>
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-1">
             <AnimatePresence initial={false}>
               {cart.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400 space-y-4 opacity-50">
-                  <div className="w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center">
-                    <ShoppingCart size={40} />
+                  <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center">
+                    <ShoppingCart size={24} />
                   </div>
-                  <p className="font-medium">No items in order</p>
+                  <p className="font-medium text-xs">No items in order</p>
                 </div>
               ) : (
                 cart.map((item) => (
@@ -359,56 +532,67 @@ const POS: React.FC = () => {
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
                     exit={{ opacity: 0, x: -20 }}
-                    className="flex items-center gap-4 bg-slate-50 p-4 rounded-3xl group"
+                    className="flex items-center gap-2 py-1.5 border-b border-slate-100 group"
                   >
-                    <div className="w-14 h-14 bg-white rounded-2xl flex items-center justify-center shrink-0 overflow-hidden shadow-sm">
-                      <img src={item.image} alt={item.name} className="w-full h-full object-cover" />
-                    </div>
                     <div className="flex-1 min-w-0">
-                      <h4 className="font-bold text-slate-800 truncate">{item.name}</h4>
+                      <h4 className="font-bold text-slate-800 truncate text-[11px]">{item.name}</h4>
                       {item.appliedTags.length > 0 && (
-                        <div className="flex flex-wrap gap-1 mt-1">
+                        <div className="flex flex-wrap gap-1 mt-0.5">
                           {item.appliedTags.map(tag => (
-                            <span key={tag.id} className="text-[10px] bg-indigo-50 text-indigo-600 px-1.5 py-0.5 rounded-md font-bold">
-                              {tag.name} (+{formatCurrency(tag.price)})
+                            <span key={tag.id} className="text-[7px] bg-indigo-50 text-indigo-600 px-1 rounded-sm font-bold">
+                              {tag.name}
                             </span>
                           ))}
                         </div>
                       )}
-                      <p className="text-indigo-600 font-bold text-sm mt-1">{formatCurrency(item.price + item.appliedTags.reduce((s, t) => s + t.price, 0))}</p>
                     </div>
-                    <div className="flex items-center gap-3 bg-white rounded-2xl p-1 shadow-sm border border-slate-100">
+                    <div className="text-right px-1">
+                      <p className="text-slate-600 font-bold text-[10px]">{formatCurrency(item.price + item.appliedTags.reduce((s, t) => s + t.price, 0))}</p>
+                    </div>
+                    <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-0.5">
                       <button 
                         onClick={() => updateQuantity(item.id, -1, item.appliedTags)}
-                        className="w-8 h-8 flex items-center justify-center hover:bg-slate-100 rounded-xl transition-colors"
+                        className="w-5 h-5 flex items-center justify-center hover:bg-white rounded-md transition-colors"
                       >
-                        <Minus size={16} />
+                        <Minus size={10} />
                       </button>
-                      <span className="w-4 text-center font-bold text-slate-800">{item.quantity}</span>
+                      <span className="w-3 text-center font-bold text-slate-800 text-[10px]">{item.quantity}</span>
                       <button 
                         onClick={() => updateQuantity(item.id, 1, item.appliedTags)}
-                        className="w-8 h-8 flex items-center justify-center hover:bg-slate-100 rounded-xl transition-colors"
+                        className="w-5 h-5 flex items-center justify-center hover:bg-white rounded-md transition-colors"
                       >
-                        <Plus size={16} />
+                        <Plus size={10} />
                       </button>
                     </div>
+                    <button 
+                      onClick={() => removeFromCart(item.id, item.appliedTags)}
+                      className="p-1 text-slate-300 hover:text-rose-500 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </motion.div>
                 ))
               )}
             </AnimatePresence>
           </div>
 
-          <div className="p-8 bg-slate-50 border-t border-slate-200 space-y-6">
-            <div className="space-y-3">
-              <div className="flex justify-between text-slate-500 font-medium">
+          <div className="p-3 md:p-4 bg-slate-50 border-t border-slate-200 space-y-2">
+            <div className="space-y-0.5">
+              <div className="flex justify-between text-slate-500 font-medium text-[10px]">
                 <span>Subtotal</span>
                 <span>{formatCurrency(subtotal)}</span>
               </div>
-              <div className="flex justify-between text-slate-500 font-medium">
-                <span>Tax (10%)</span>
+              {serviceCharge > 0 && (
+                <div className="flex justify-between text-slate-500 font-medium text-[10px]">
+                  <span>Service Charge ({serviceChargeRate}%)</span>
+                  <span>{formatCurrency(serviceCharge)}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-slate-500 font-medium text-[10px]">
+                <span>Tax ({taxRate}%)</span>
                 <span>{formatCurrency(tax)}</span>
               </div>
-              <div className="flex justify-between text-slate-800 font-black text-2xl pt-4 border-t border-slate-200">
+              <div className="flex justify-between text-slate-800 font-black text-sm pt-1 border-t border-slate-200 mt-1">
                 <span>Total</span>
                 <span className="text-indigo-600">{formatCurrency(total)}</span>
               </div>
@@ -417,16 +601,110 @@ const POS: React.FC = () => {
             <button
               disabled={cart.length === 0}
               onClick={handleCheckout}
-              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-5 rounded-3xl shadow-xl shadow-indigo-200 transition-all flex items-center justify-center gap-3 text-lg"
+              className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white font-bold py-2.5 rounded-lg shadow-md transition-all flex items-center justify-center gap-2 text-xs"
             >
-              <Receipt size={24} />
+              <Receipt size={16} />
               Process Payment
             </button>
           </div>
+        </aside>
+
+        {/* Mobile Cart Toggle */}
+        <div className="lg:hidden fixed bottom-6 right-6 z-40">
+          <button
+            onClick={() => setIsCartOpen(true)}
+            className="flex items-center gap-2 px-6 py-4 bg-indigo-600 text-white rounded-full shadow-2xl shadow-indigo-300 font-bold active:scale-95 transition-transform"
+          >
+            <ShoppingCart size={24} />
+            <span className="relative">
+              View Order
+              {cart.length > 0 && (
+                <span className="absolute -top-6 -right-4 w-6 h-6 bg-rose-500 text-white text-[10px] rounded-full flex items-center justify-center border-2 border-white">
+                  {cart.length}
+                </span>
+              )}
+            </span>
+            <span className="ml-2 border-l border-indigo-400 pl-2">
+              {formatCurrency(total)}
+            </span>
+          </button>
         </div>
       </div>
 
       {/* Payment Modal */}
+      <AnimatePresence>
+        {showHistoryModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[40px] w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[80vh]"
+            >
+              <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold text-slate-800">Past Transactions</h2>
+                  <p className="text-sm text-slate-500">Recent sales for {currentBranch?.name}</p>
+                </div>
+                <button onClick={() => setShowHistoryModal(false)} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                  <X size={24} className="text-slate-400" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <table className="w-full text-left">
+                  <thead className="sticky top-0 bg-white z-10">
+                    <tr className="bg-slate-50 text-slate-500 text-xs uppercase tracking-wider">
+                      <th className="px-8 py-4 font-semibold">Order #</th>
+                      <th className="px-8 py-4 font-semibold">Time</th>
+                      <th className="px-8 py-4 font-semibold">Total</th>
+                      <th className="px-8 py-4 font-semibold">Status</th>
+                      <th className="px-8 py-4 font-semibold text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {pastSales.map((sale: Sale) => (
+                      <tr key={sale.id} className="hover:bg-slate-50 transition-colors">
+                        <td className="px-8 py-4 font-mono text-xs text-slate-500">#{sale.orderNumber || sale.id.slice(0, 8)}</td>
+                        <td className="px-8 py-4 text-sm text-slate-600">
+                          {sale.timestamp?.toDate ? format(sale.timestamp.toDate(), 'HH:mm:ss') : 'N/A'}
+                        </td>
+                        <td className="px-8 py-4 font-bold text-slate-800">{formatCurrency(sale.total)}</td>
+                        <td className="px-8 py-4">
+                          <span className={cn(
+                            "px-2 py-1 rounded-lg text-[10px] font-bold uppercase",
+                            sale.status === 'void' ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+                          )}>
+                            {sale.status || 'completed'}
+                          </span>
+                        </td>
+                        <td className="px-8 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button 
+                              onClick={() => handlePrintReceipt(sale)}
+                              className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
+                              title="Print Receipt"
+                            >
+                              <Printer size={18} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {pastSales.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-8 py-20 text-center text-slate-400">
+                          <p>No transactions found for today</p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <AnimatePresence>
         {showPaymentModal && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
@@ -469,6 +747,53 @@ const POS: React.FC = () => {
                 <span className="text-slate-500 font-bold">Amount to Pay</span>
                 <span className="text-3xl font-black text-indigo-600">{formatCurrency(total)}</span>
               </div>
+
+              {paymentMethod === 'digital_wallet' && (
+                <div className="mb-8 p-6 bg-amber-50 rounded-[32px] border border-amber-100 space-y-4">
+                  <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+                    {wallets.map((wallet) => (
+                      <button 
+                        key={wallet.id}
+                        onClick={() => setSelectedWallet(wallet)}
+                        className={cn(
+                          "whitespace-nowrap px-4 py-2 rounded-xl text-[10px] font-bold uppercase transition-all",
+                          selectedWallet?.id === wallet.id ? "bg-amber-500 text-white shadow-md" : "text-amber-600 hover:bg-amber-50"
+                        )}
+                      >
+                        {wallet.name} ({wallet.network})
+                      </button>
+                    ))}
+                  </div>
+
+                  {selectedWallet ? (
+                    <div className="flex flex-col items-center gap-4">
+                      <div className="p-4 bg-white rounded-3xl shadow-sm border border-amber-100">
+                        {selectedWallet.qrCodeUrl ? (
+                          <img src={selectedWallet.qrCodeUrl} alt="QR" className="w-[150px] h-[150px] object-contain" referrerPolicy="no-referrer" />
+                        ) : (
+                          <QRCodeCanvas 
+                            value={selectedWallet.address} 
+                            size={150}
+                            level="H"
+                          />
+                        )}
+                      </div>
+                      <div className="text-center">
+                        <p className="text-xs font-bold text-amber-800 uppercase tracking-wider mb-1">
+                          {selectedWallet.name} Address ({selectedWallet.network})
+                        </p>
+                        <p className="text-[10px] font-mono text-amber-600 break-all max-w-[200px]">
+                          {selectedWallet.address}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="py-10 text-center text-amber-600/50 italic text-sm">
+                      No crypto wallets configured
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex gap-4">
                 <button 

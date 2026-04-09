@@ -79,7 +79,7 @@ export interface Account {
   id: string;
   branch_id: string;
   name: string;
-  type: 'cash' | 'bank' | 'sales' | 'receivable' | 'discount' | 'payment' | 'expense' | 'supplier';
+  type: 'cash' | 'card' | 'wallet' | 'bank' | 'sales' | 'receivable' | 'discount' | 'payment' | 'expense' | 'supplier';
   balance: number;
 }
 
@@ -98,6 +98,7 @@ export interface Branch {
   phone?: string;
   email?: string;
   isActive: boolean;
+  receiptTemplate?: string;
 }
 
 export interface Customer {
@@ -120,12 +121,34 @@ export interface AccountTransaction {
 
 export interface Sale {
   id: string;
+  orderNumber: string;
+  branch_id: string;
   items: SaleItem[];
   total: number;
   subtotal: number;
   tax: number;
   paymentMethod: string;
   timestamp: any; // Firestore Timestamp
+  status?: 'completed' | 'void';
+}
+
+export interface CryptoWallet {
+  id: string;
+  name: string;
+  network: 'ERC-20' | 'TRC-20' | 'Binance' | 'Other';
+  address: string;
+  qrCodeUrl?: string;
+}
+
+export interface Settings {
+  company_name?: string;
+  tax_percentage?: number;
+  service_charge?: number;
+  btc_address?: string;
+  eth_address?: string;
+  usdt_erc20_address?: string;
+  usdt_trc20_address?: string;
+  default_bill_printer_id?: string;
 }
 
 export interface Warehouse {

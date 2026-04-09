@@ -14,14 +14,117 @@ import {
   ArrowUpRight,
   ArrowDownLeft,
   History,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Eye,
+  Printer,
+  Trash2,
+  Ban,
+  X,
+  AlertCircle
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { formatCurrency, cn } from '../lib/utils';
 import { format } from 'date-fns';
+import { DEFAULT_RECEIPT_TEMPLATE } from '../constants';
 import { motion, AnimatePresence } from 'motion/react';
+import { useApp } from '../context/AppContext';
 
 const Reports: React.FC = () => {
+  const { user } = useApp();
   const [activeTab, setActiveTab] = useState<'sales' | 'accounts'>('sales');
+  const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
+  const [showVoidConfirm, setShowVoidConfirm] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
+  const [branches, setBranches] = useState<any[]>([]);
+  const [settings, setSettings] = useState<any>(null);
+
+  useEffect(() => {
+    const unsub = posService.subscribeToBranches(setBranches);
+    const loadSettings = async () => {
+      const data = await posService.getSettings();
+      setSettings(data);
+    };
+    loadSettings();
+    return () => unsub();
+  }, []);
+
+  const handleVoid = async (id: string) => {
+    try {
+      await posService.voidSale(id);
+      toast.success('Transaction voided successfully');
+      setShowVoidConfirm(null);
+    } catch (error) {
+      toast.error('Failed to void transaction');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await posService.deleteSale(id);
+      toast.success('Transaction deleted successfully');
+      setShowDeleteConfirm(null);
+    } catch (error) {
+      toast.error('Failed to delete transaction');
+    }
+  };
+
+  const handlePrint = (sale: Sale) => {
+    toast.info('Printing receipt...');
+    
+    const branch = branches.find(b => b.id === sale.branch_id?.toString());
+    const template = branch?.receiptTemplate || DEFAULT_RECEIPT_TEMPLATE;
+    const dateStr = sale.timestamp?.toDate 
+      ? format(sale.timestamp.toDate(), 'MMM dd, yyyy HH:mm')
+      : (typeof sale.timestamp === 'string' ? format(new Date(sale.timestamp), 'MMM dd, yyyy HH:mm') : format(new Date(), 'MMM dd, yyyy HH:mm'));
+
+    const itemsHtml = sale.items.map((item: any) => `
+      <tr>
+        <td style="padding: 2px 0;">${item.name}</td>
+        <td style="text-align: center;">${item.quantity}</td>
+        <td style="text-align: right;">${formatCurrency(item.price * item.quantity)}</td>
+      </tr>
+    `).join('');
+
+    const receiptHtml = template
+      .replace('{{companyName}}', settings?.company_name || 'POS RECEIPT')
+      .replace('{{branchName}}', branch?.name || '')
+      .replace('{{branchAddress}}', branch?.address || '')
+      .replace('{{branchPhone}}', branch?.phone || '')
+      .replace('{{orderNumber}}', sale.orderNumber || sale.id)
+      .replace('{{date}}', dateStr)
+      .replace('{{cashierName}}', 'Staff')
+      .replace('{{items}}', itemsHtml)
+      .replace('{{subtotal}}', formatCurrency(sale.subtotal || sale.total))
+      .replace('{{tax}}', formatCurrency(sale.tax || 0))
+      .replace('{{taxPercentage}}', (settings?.tax_percentage || 0).toString())
+      .replace('{{serviceCharge}}', formatCurrency(sale.total - (sale.subtotal || sale.total) - (sale.tax || 0)))
+      .replace('{{serviceChargePercentage}}', (settings?.service_charge || 0).toString())
+      .replace('{{total}}', formatCurrency(sale.total))
+      .replace('{{paymentMethod}}', (sale.paymentMethod || 'CASH').toUpperCase());
+
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Receipt #${sale.orderNumber || sale.id}</title>
+            <style>
+              @media print {
+                body { margin: 0; padding: 0; width: 80mm; }
+                @page { size: 80mm auto; margin: 0; }
+              }
+              body { margin: 0; padding: 0; }
+            </style>
+          </head>
+          <body>
+            ${receiptHtml}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.print();
+    }
+  };
   const [sales, setSales] = useState<Sale[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
@@ -192,10 +295,51 @@ const Reports: React.FC = () => {
                         <td className="px-6 py-4">
                           <span className="font-bold text-slate-800">{formatCurrency(sale.total)}</span>
                         </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <span className={cn(
+                              "px-2 py-1 rounded-lg text-[10px] font-bold uppercase",
+                              sale.status === 'void' ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+                            )}>
+                              {sale.status || 'completed'}
+                            </span>
+                          </div>
+                        </td>
                         <td className="px-6 py-4 text-right">
-                          <button className="p-2 text-slate-300 hover:text-indigo-600 transition-colors">
-                            <ChevronRight size={20} />
-                          </button>
+                          <div className="flex items-center justify-end gap-2 transition-opacity">
+                            <button 
+                              onClick={() => setSelectedSale(sale)}
+                              className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all"
+                              title="View Details"
+                            >
+                              <Eye size={18} />
+                            </button>
+                            <button 
+                              onClick={() => handlePrint(sale)}
+                              className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
+                              title="Print Receipt"
+                            >
+                              <Printer size={18} />
+                            </button>
+                            {sale.status !== 'void' && (user?.role === 'admin' || user?.role === 'manager') && (
+                              <button 
+                                onClick={() => setShowVoidConfirm(sale.id)}
+                                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                                title="Void Transaction"
+                              >
+                                <Ban size={18} />
+                              </button>
+                            )}
+                            {user?.role === 'admin' && (
+                              <button 
+                                onClick={() => setShowDeleteConfirm(sale.id)}
+                                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition-all"
+                                title="Delete Transaction"
+                              >
+                                <Trash2 size={18} />
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -376,6 +520,191 @@ const Reports: React.FC = () => {
               </div>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Sale Details Modal */}
+      <AnimatePresence>
+        {selectedSale && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[40px] w-full max-w-lg overflow-hidden shadow-2xl"
+            >
+              <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-800">Transaction Details</h3>
+                  <p className="text-sm text-slate-500 font-mono">#{selectedSale.orderNumber}</p>
+                </div>
+                <button 
+                  onClick={() => setSelectedSale(null)}
+                  className="p-2 hover:bg-white rounded-full transition-colors shadow-sm"
+                >
+                  <X size={24} className="text-slate-400" />
+                </button>
+              </div>
+              
+              <div className="p-8 space-y-6 max-h-[60vh] overflow-y-auto">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Date & Time</p>
+                    <p className="text-slate-700 font-medium">
+                      {selectedSale.timestamp?.toDate ? format(selectedSale.timestamp.toDate(), 'MMMM dd, yyyy HH:mm:ss') : 'N/A'}
+                    </p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Status</p>
+                    <span className={cn(
+                      "px-3 py-1 rounded-full text-xs font-bold uppercase",
+                      selectedSale.status === 'void' ? "bg-rose-50 text-rose-600" : "bg-emerald-50 text-emerald-600"
+                    )}>
+                      {selectedSale.status || 'completed'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Items</p>
+                  <div className="space-y-2">
+                    {selectedSale.items && selectedSale.items.length > 0 ? (
+                      selectedSale.items.map((item: any, i: number) => (
+                        <div key={i} className="flex justify-between items-center p-3 bg-slate-50 rounded-2xl">
+                          <div>
+                            <p className="font-bold text-slate-800">{item.name}</p>
+                            <p className="text-xs text-slate-500">{formatCurrency(item.price)} x {item.quantity}</p>
+                          </div>
+                          <p className="font-bold text-slate-800">{formatCurrency(item.price * item.quantity)}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-4 text-center text-slate-400 bg-slate-50 rounded-2xl">
+                        No items found for this transaction
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-slate-100 space-y-2">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-500">Subtotal</span>
+                    <span className="font-medium text-slate-800">{formatCurrency(selectedSale.subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between text-lg font-bold">
+                    <span className="text-slate-800">Total</span>
+                    <span className="text-indigo-600">{formatCurrency(selectedSale.total)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-8 bg-slate-50/50 flex gap-3">
+                <button 
+                  onClick={() => handlePrint(selectedSale)}
+                  className="flex-1 bg-white border border-slate-200 text-slate-700 font-bold py-4 rounded-2xl hover:bg-slate-50 transition-all flex items-center justify-center gap-2"
+                >
+                  <Printer size={20} />
+                  Print Receipt
+                </button>
+                {selectedSale.status !== 'void' && (user?.role === 'admin' || user?.role === 'manager') && (
+                  <button 
+                    onClick={() => {
+                      setShowVoidConfirm(selectedSale.id);
+                      setSelectedSale(null);
+                    }}
+                    className="flex-1 bg-rose-50 text-rose-600 font-bold py-4 rounded-2xl hover:bg-rose-100 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Ban size={20} />
+                    Void Sale
+                  </button>
+                )}
+                {user?.role === 'admin' && (
+                  <button 
+                    onClick={() => {
+                      setShowDeleteConfirm(selectedSale.id);
+                      setSelectedSale(null);
+                    }}
+                    className="flex-1 bg-rose-600 text-white font-bold py-4 rounded-2xl hover:bg-rose-700 transition-all flex items-center justify-center gap-2"
+                  >
+                    <Trash2 size={20} />
+                    Delete
+                  </button>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Void Confirmation Modal */}
+      <AnimatePresence>
+        {showVoidConfirm && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[40px] w-full max-w-sm p-8 text-center shadow-2xl"
+            >
+              <div className="w-20 h-20 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                <AlertCircle size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800 mb-2">Void Transaction?</h3>
+              <p className="text-slate-500 mb-8">
+                This will cancel the sale, restore stock levels, and reverse account balances. This action cannot be undone.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowVoidConfirm(null)}
+                  className="flex-1 px-6 py-4 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => handleVoid(showVoidConfirm)}
+                  className="flex-1 px-6 py-4 bg-rose-600 text-white font-bold rounded-2xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-100"
+                >
+                  Void Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Delete Confirmation Modal */}
+      <AnimatePresence>
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[40px] w-full max-w-sm p-8 text-center shadow-2xl"
+            >
+              <div className="w-20 h-20 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800 mb-2">Delete Transaction?</h3>
+              <p className="text-slate-500 mb-8">
+                Are you sure you want to permanently delete this transaction? This will remove it from all records.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowDeleteConfirm(null)}
+                  className="flex-1 px-6 py-4 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => handleDelete(showDeleteConfirm)}
+                  className="flex-1 px-6 py-4 bg-rose-600 text-white font-bold rounded-2xl hover:bg-rose-700 transition-all shadow-lg shadow-rose-100"
+                >
+                  Delete Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>

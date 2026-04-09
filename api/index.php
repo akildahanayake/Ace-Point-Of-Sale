@@ -11,6 +11,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 
 require_once 'config.php';
 
+// Ensure receipt_template column exists in branches table
+try {
+    $pdo->exec("ALTER TABLE branches ADD COLUMN IF NOT EXISTS receipt_template TEXT");
+} catch (Exception $e) {}
+
+// Ensure crypto_wallets table exists
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS crypto_wallets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        network TEXT NOT NULL,
+        address TEXT NOT NULL,
+        qr_code_url TEXT,
+        is_active INTEGER DEFAULT 1
+    )");
+} catch (Exception $e) {}
+
 $method = $_SERVER['REQUEST_METHOD'];
 $action = $_GET['action'] ?? '';
 
@@ -71,9 +88,12 @@ try {
                 echo json_encode($stmt->fetchAll());
             } elseif ($method === 'POST') {
                 $data = json_decode(file_get_contents("php://input"), true);
-                $sql = "INSERT INTO branches (name, address, phone, email, is_active) VALUES (?, ?, ?, ?, 1)";
+                $sql = "INSERT INTO branches (name, address, phone, email, receipt_template, is_active) VALUES (?, ?, ?, ?, ?, 1)";
                 $stmt = $pdo->prepare($sql);
-                $stmt->execute([$data['name'], $data['address'], $data['phone'], $data['email']]);
+                $stmt->execute([
+                    $data['name'], $data['address'], $data['phone'], 
+                    $data['email'], $data['receiptTemplate'] ?? null
+                ]);
                 echo json_encode(['id' => $pdo->lastInsertId()]);
             }
             break;
@@ -82,11 +102,12 @@ try {
             if ($method === 'PUT' || $method === 'POST') {
                 $id = $_GET['id'] ?? 0;
                 $data = json_decode(file_get_contents("php://input"), true);
-                $sql = "UPDATE branches SET name = ?, address = ?, phone = ?, email = ?, is_active = ? WHERE id = ?";
+                $sql = "UPDATE branches SET name = ?, address = ?, phone = ?, email = ?, receipt_template = ?, is_active = ? WHERE id = ?";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
                     $data['name'], $data['address'], $data['phone'], 
-                    $data['email'], $data['isActive'] ? 1 : 0, $id
+                    $data['email'], $data['receiptTemplate'] ?? null,
+                    $data['isActive'] ? 1 : 0, $id
                 ]);
                 echo json_encode(['success' => true]);
             }
@@ -99,6 +120,64 @@ try {
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([$id]);
                 echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'crypto_wallets':
+            if ($method === 'GET') {
+                $stmt = $pdo->query("SELECT * FROM crypto_wallets WHERE is_active = 1 ORDER BY name");
+                echo json_encode($stmt->fetchAll());
+            } elseif ($method === 'POST') {
+                $data = json_decode(file_get_contents("php://input"), true);
+                $sql = "INSERT INTO crypto_wallets (name, network, address, qr_code_url) VALUES (?, ?, ?, ?)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$data['name'], $data['network'], $data['address'], $data['qr_code_url'] ?? null]);
+                echo json_encode(['id' => $pdo->lastInsertId()]);
+            }
+            break;
+
+        case 'update_crypto_wallet':
+            if ($method === 'PUT' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $data = json_decode(file_get_contents("php://input"), true);
+                $sql = "UPDATE crypto_wallets SET name = ?, network = ?, address = ?, qr_code_url = ? WHERE id = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$data['name'], $data['network'], $data['address'], $data['qr_code_url'] ?? null, $id]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'delete_crypto_wallet':
+            if ($method === 'DELETE' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $sql = "UPDATE crypto_wallets SET is_active = 0 WHERE id = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$id]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'upload_qr':
+            if ($method === 'POST') {
+                if (!isset($_FILES['qr_code'])) {
+                    http_response_code(400);
+                    echo json_encode(['error' => 'No file uploaded']);
+                    break;
+                }
+                $file = $_FILES['qr_code'];
+                $uploadDir = '../uploads/qr/';
+                if (!is_dir($uploadDir)) {
+                    mkdir($uploadDir, 0777, true);
+                }
+                $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+                $fileName = uniqid() . '.' . $ext;
+                $targetPath = $uploadDir . $fileName;
+                if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+                    echo json_encode(['url' => '/uploads/qr/' . $fileName]);
+                } else {
+                    http_response_code(500);
+                    echo json_encode(['error' => 'Failed to move uploaded file']);
+                }
             }
             break;
 
@@ -118,7 +197,12 @@ try {
                 currency_sign TEXT,
                 currency_prefix INT DEFAULT 1,
                 tax_percentage FLOAT DEFAULT 0,
-                service_charge FLOAT DEFAULT 0
+                service_charge FLOAT DEFAULT 0,
+                btc_address TEXT,
+                eth_address TEXT,
+                usdt_erc20_address TEXT,
+                usdt_trc20_address TEXT,
+                default_bill_printer_id INT
             )");
 
             // Check if default settings exist
@@ -136,14 +220,19 @@ try {
                     company_name = ?, company_trn = ?, address = ?, phone = ?, 
                     email = ?, whatsapp = ?, facebook = ?, instagram = ?, 
                     currency_name = ?, currency_sign = ?, currency_prefix = ?, 
-                    tax_percentage = ?, service_charge = ?
+                    tax_percentage = ?, service_charge = ?,
+                    btc_address = ?, eth_address = ?, usdt_erc20_address = ?, 
+                    usdt_trc20_address = ?, default_bill_printer_id = ?
                     WHERE id = 1";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
                     $data['company_name'], $data['company_trn'], $data['address'], $data['phone'], 
                     $data['email'], $data['whatsapp'], $data['facebook'], $data['instagram'], 
                     $data['currency_name'], $data['currency_sign'], $data['currency_prefix'] ? 1 : 0, 
-                    $data['tax_percentage'], $data['service_charge']
+                    $data['tax_percentage'], $data['service_charge'],
+                    $data['btc_address'] ?? null, $data['eth_address'] ?? null, 
+                    $data['usdt_erc20_address'] ?? null, $data['usdt_trc20_address'] ?? null,
+                    $data['default_bill_printer_id'] ?? null
                 ]);
                 echo json_encode(['success' => true]);
             }
@@ -203,8 +292,113 @@ try {
                         $stmtPoints->execute([$points, $data['customer_id']]);
                     }
 
+                    // Update Branch Accounts
+                    $paymentMethod = $data['payment_method'];
+                    $accountName = ucfirst($paymentMethod);
+                    if ($paymentMethod === 'digital_wallet') $accountName = 'Wallet';
+                    
+                    // Find or create account
+                    $stmtAcc = $pdo->prepare("SELECT id FROM accounts WHERE branch_id = ? AND (name = ? OR type = ?)");
+                    $stmtAcc->execute([$data['branch_id'], $accountName, $paymentMethod]);
+                    $account = $stmtAcc->fetch();
+                    
+                    if (!$account) {
+                        $stmtNewAcc = $pdo->prepare("INSERT INTO accounts (branch_id, name, type, balance) VALUES (?, ?, ?, 0)");
+                        $stmtNewAcc->execute([$data['branch_id'], $accountName, $paymentMethod]);
+                        $accountId = $pdo->lastInsertId();
+                    } else {
+                        $accountId = $account['id'];
+                    }
+
+                    // Record Transaction
+                    $stmtTx = $pdo->prepare("INSERT INTO account_transactions (account_id, credit, description) VALUES (?, ?, ?)");
+                    $stmtTx->execute([$accountId, $data['total'], "Sale #$orderNumber"]);
+
+                    // Update Balance
+                    $stmtBal = $pdo->prepare("UPDATE accounts SET balance = balance + ? WHERE id = ?");
+                    $stmtBal->execute([$data['total'], $accountId]);
+
                     $pdo->commit();
                     echo json_encode(['success' => true, 'orderId' => $orderId]);
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    throw $e;
+                }
+            }
+            break;
+
+        case 'void_sale':
+            if ($method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $pdo->beginTransaction();
+                try {
+                    // Get sale details
+                    $stmtSale = $pdo->prepare("SELECT * FROM orders WHERE id = ?");
+                    $stmtSale->execute([$id]);
+                    $sale = $stmtSale->fetch();
+                    
+                    if (!$sale || $sale['status'] === 'void') {
+                        throw new Exception("Sale not found or already voided");
+                    }
+
+                    // 1. Update sale status
+                    $stmtVoid = $pdo->prepare("UPDATE orders SET status = 'void' WHERE id = ?");
+                    $stmtVoid->execute([$id]);
+
+                    // 2. Restore stock
+                    $stmtItems = $pdo->prepare("SELECT * FROM order_items WHERE order_id = ?");
+                    $stmtItems->execute([$id]);
+                    $items = $stmtItems->fetchAll();
+                    
+                    foreach ($items as $item) {
+                        $stmtStock = $pdo->prepare("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?");
+                        $stmtStock->execute([$item['quantity'], $item['product_id']]);
+                    }
+
+                    // 3. Reverse account transaction
+                    $paymentMethod = $sale['payment_method'];
+                    $accountName = ucfirst($paymentMethod);
+                    if ($paymentMethod === 'digital_wallet') $accountName = 'Wallet';
+
+                    $stmtAcc = $pdo->prepare("SELECT id FROM accounts WHERE branch_id = ? AND (name = ? OR type = ?)");
+                    $stmtAcc->execute([$sale['branch_id'], $accountName, $paymentMethod]);
+                    $account = $stmtAcc->fetch();
+
+                    if ($account) {
+                        $accountId = $account['id'];
+                        // Record Reversal Transaction
+                        $stmtTx = $pdo->prepare("INSERT INTO account_transactions (account_id, debit, description) VALUES (?, ?, ?)");
+                        $stmtTx->execute([$accountId, $sale['grand_total'], "Void Sale #{$sale['order_number']}"]);
+
+                        // Update Balance
+                        $stmtBal = $pdo->prepare("UPDATE accounts SET balance = balance - ? WHERE id = ?");
+                        $stmtBal->execute([$sale['grand_total'], $accountId]);
+                    }
+
+                    $pdo->commit();
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    throw $e;
+                }
+            }
+            break;
+
+        case 'delete_sale':
+            if ($method === 'DELETE' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $pdo->beginTransaction();
+                try {
+                    // Delete order items first
+                    $stmtItems = $pdo->prepare("DELETE FROM order_items WHERE order_id = ?");
+                    $stmtItems->execute([$id]);
+                    
+                    // Delete order
+                    $stmtOrder = $pdo->prepare("DELETE FROM orders WHERE id = ?");
+                    $stmtOrder->execute([$id]);
+                    
+                    $pdo->commit();
+                    echo json_encode(['success' => true]);
                 } catch (Exception $e) {
                     $pdo->rollBack();
                     throw $e;
@@ -282,7 +476,13 @@ try {
 
         case 'accounts':
             if ($method === 'GET') {
-                $stmt = $pdo->query("SELECT * FROM accounts ORDER BY name");
+                $branchId = $_GET['branchId'] ?? null;
+                if ($branchId) {
+                    $stmt = $pdo->prepare("SELECT * FROM accounts WHERE branch_id = ? ORDER BY name");
+                    $stmt->execute([$branchId]);
+                } else {
+                    $stmt = $pdo->query("SELECT * FROM accounts ORDER BY name");
+                }
                 echo json_encode($stmt->fetchAll());
             } elseif ($method === 'POST') {
                 $data = json_decode(file_get_contents("php://input"), true);
@@ -290,6 +490,39 @@ try {
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([$data['branch_id'], $data['name'], $data['type'], $data['balance']]);
                 echo json_encode(['id' => $pdo->lastInsertId()]);
+            }
+            break;
+
+        case 'update_account_balance':
+            if ($method === 'PUT' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $data = json_decode(file_get_contents("php://input"), true);
+                $sql = "UPDATE accounts SET balance = ? WHERE id = ?";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([$data['balance'], $id]);
+                echo json_encode(['success' => true]);
+            }
+            break;
+
+        case 'delete_account':
+            if ($method === 'DELETE' || $method === 'POST') {
+                $id = $_GET['id'] ?? 0;
+                $pdo->beginTransaction();
+                try {
+                    // Delete transactions first
+                    $stmtTx = $pdo->prepare("DELETE FROM account_transactions WHERE account_id = ?");
+                    $stmtTx->execute([$id]);
+                    
+                    // Delete account
+                    $stmtAcc = $pdo->prepare("DELETE FROM accounts WHERE id = ?");
+                    $stmtAcc->execute([$id]);
+                    
+                    $pdo->commit();
+                    echo json_encode(['success' => true]);
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    throw $e;
+                }
             }
             break;
 
@@ -328,7 +561,15 @@ try {
         case 'sales':
             if ($method === 'GET') {
                 $stmt = $pdo->query("SELECT * FROM orders ORDER BY created_at DESC");
-                echo json_encode($stmt->fetchAll());
+                $sales = $stmt->fetchAll();
+                
+                foreach ($sales as &$sale) {
+                    $stmtItems = $pdo->prepare("SELECT oi.*, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?");
+                    $stmtItems->execute([$sale['id']]);
+                    $sale['items'] = $stmtItems->fetchAll();
+                }
+                
+                echo json_encode($sales);
             }
             break;
 

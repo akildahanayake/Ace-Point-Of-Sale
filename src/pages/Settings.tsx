@@ -21,8 +21,13 @@ import {
   X,
   Monitor,
   Clock,
-  UserCheck
+  UserCheck,
+  Plus,
+  Trash2,
+  Edit2,
+  QrCode
 } from 'lucide-react';
+import { CryptoWallet } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
@@ -103,6 +108,17 @@ const Settings: React.FC = () => {
 const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [wallets, setWallets] = useState<CryptoWallet[]>([]);
+  const [showWalletModal, setShowWalletModal] = useState(false);
+  const [editingWallet, setEditingWallet] = useState<CryptoWallet | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [newWallet, setNewWallet] = useState<Omit<CryptoWallet, 'id'>>({
+    name: '',
+    network: 'ERC-20',
+    address: '',
+    qrCodeUrl: ''
+  });
+
   const [formData, setFormData] = useState({
     companyName: '',
     companyTrn: '',
@@ -116,7 +132,12 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     currencySign: '$',
     currencyPrefix: true,
     taxPercentage: 10,
-    serviceCharge: 0
+    serviceCharge: 0,
+    btcAddress: '',
+    ethAddress: '',
+    usdtErc20Address: '',
+    usdtTrc20Address: '',
+    defaultBillPrinterId: null as number | null
   });
 
   useEffect(() => {
@@ -137,7 +158,12 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             currencySign: data.currency_sign || '$',
             currencyPrefix: data.currency_prefix === 1,
             taxPercentage: data.tax_percentage || 0,
-            serviceCharge: data.service_charge || 0
+            serviceCharge: data.service_charge || 0,
+            btcAddress: data.btc_address || '',
+            ethAddress: data.eth_address || '',
+            usdtErc20Address: data.usdt_erc20_address || '',
+            usdtTrc20Address: data.usdt_trc20_address || '',
+            defaultBillPrinterId: data.default_bill_printer_id || null
           });
         }
       } catch (error) {
@@ -148,7 +174,53 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
       }
     };
     loadSettings();
+
+    const unsubWallets = posService.subscribeToCryptoWallets(setWallets);
+    return () => unsubWallets();
   }, []);
+
+  const handleAddWallet = async () => {
+    try {
+      if (editingWallet) {
+        await posService.updateCryptoWallet(editingWallet.id, newWallet);
+        toast.success('Wallet updated successfully');
+      } else {
+        await posService.addCryptoWallet(newWallet);
+        toast.success('Wallet added successfully');
+      }
+      setShowWalletModal(false);
+      setEditingWallet(null);
+      setNewWallet({ name: '', network: 'ERC-20', address: '', qrCodeUrl: '' });
+    } catch (error) {
+      toast.error('Failed to save wallet');
+    }
+  };
+
+  const handleDeleteWallet = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this wallet?')) return;
+    try {
+      await posService.deleteCryptoWallet(id);
+      toast.success('Wallet deleted successfully');
+    } catch (error) {
+      toast.error('Failed to delete wallet');
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploading(true);
+    try {
+      const result = await posService.uploadQrCode(file);
+      setNewWallet(prev => ({ ...prev, qrCodeUrl: result.url }));
+      toast.success('QR Code uploaded successfully');
+    } catch (error) {
+      toast.error('Failed to upload QR code');
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -166,7 +238,12 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         currency_sign: formData.currencySign,
         currency_prefix: formData.currencyPrefix ? 1 : 0,
         tax_percentage: formData.taxPercentage,
-        service_charge: formData.serviceCharge
+        service_charge: formData.serviceCharge,
+        btc_address: formData.btcAddress,
+        eth_address: formData.ethAddress,
+        usdt_erc20_address: formData.usdtErc20Address,
+        usdt_trc20_address: formData.usdtTrc20Address,
+        default_bill_printer_id: formData.defaultBillPrinterId
       });
       toast.success('General settings saved successfully');
       onBack();
@@ -353,6 +430,72 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           </div>
         </section>
 
+        {/* Crypto Wallets */}
+        <section className="bg-white rounded-[32px] p-8 border border-slate-100 shadow-sm space-y-6">
+          <div className="flex items-center justify-between border-b border-slate-50 pb-4">
+            <h3 className="text-lg font-bold text-slate-800">Crypto Payment Wallets</h3>
+            <button 
+              onClick={() => {
+                setEditingWallet(null);
+                setNewWallet({ name: '', network: 'ERC-20', address: '', qrCodeUrl: '' });
+                setShowWalletModal(true);
+              }}
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-all font-medium text-sm"
+            >
+              <Plus size={18} />
+              Add Wallet
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {wallets.map((wallet) => (
+              <div key={wallet.id} className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between group">
+                <div className="flex items-center gap-4">
+                  {wallet.qrCodeUrl ? (
+                    <img src={wallet.qrCodeUrl} alt="QR" className="w-12 h-12 rounded-lg object-cover border border-slate-200" />
+                  ) : (
+                    <div className="w-12 h-12 bg-white rounded-lg border border-slate-200 flex items-center justify-center text-slate-300">
+                      <QrCode size={20} />
+                    </div>
+                  )}
+                  <div>
+                    <p className="font-bold text-slate-800">{wallet.name}</p>
+                    <p className="text-xs text-slate-500">{wallet.network} • {wallet.address.slice(0, 8)}...</p>
+                  </div>
+                </div>
+                <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button 
+                    onClick={() => {
+                      setEditingWallet(wallet);
+                      setNewWallet({
+                        name: wallet.name,
+                        network: wallet.network,
+                        address: wallet.address,
+                        qrCodeUrl: wallet.qrCodeUrl || ''
+                      });
+                      setShowWalletModal(true);
+                    }}
+                    className="p-2 text-slate-400 hover:text-indigo-600 hover:bg-white rounded-lg transition-all"
+                  >
+                    <Edit2 size={16} />
+                  </button>
+                  <button 
+                    onClick={() => handleDeleteWallet(wallet.id)}
+                    className="p-2 text-slate-400 hover:text-rose-600 hover:bg-white rounded-lg transition-all"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {wallets.length === 0 && (
+              <div className="col-span-2 py-10 text-center text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                <p>No crypto wallets configured</p>
+              </div>
+            )}
+          </div>
+        </section>
+
         <button 
           onClick={handleSave}
           disabled={saving}
@@ -362,6 +505,100 @@ const GeneralSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
           {saving ? 'Saving Settings...' : 'Save All General Settings'}
         </button>
       </div>
+
+      {/* Wallet Modal */}
+      <AnimatePresence>
+        {showWalletModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[40px] w-full max-w-md overflow-hidden shadow-2xl"
+            >
+              <div className="p-8 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
+                <h3 className="text-xl font-bold text-slate-800">{editingWallet ? 'Edit Wallet' : 'Add Crypto Wallet'}</h3>
+                <button 
+                  onClick={() => setShowWalletModal(false)}
+                  className="p-2 hover:bg-white rounded-full transition-colors shadow-sm"
+                >
+                  <X size={24} className="text-slate-400" />
+                </button>
+              </div>
+              
+              <div className="p-8 space-y-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Crypto Name</label>
+                  <input 
+                    type="text" 
+                    placeholder="e.g. Bitcoin, Ethereum"
+                    value={newWallet.name}
+                    onChange={(e) => setNewWallet({...newWallet, name: e.target.value})}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Network</label>
+                  <select 
+                    value={newWallet.network}
+                    onChange={(e) => setNewWallet({...newWallet, network: e.target.value as any})}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                  >
+                    <option value="ERC-20">ERC-20</option>
+                    <option value="TRC-20">TRC-20</option>
+                    <option value="Binance">Binance</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">Wallet Address</label>
+                  <input 
+                    type="text" 
+                    placeholder="Enter wallet address"
+                    value={newWallet.address}
+                    onChange={(e) => setNewWallet({...newWallet, address: e.target.value})}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl focus:ring-2 focus:ring-indigo-500 outline-none"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-bold text-slate-700">QR Code</label>
+                  <div className="flex items-center gap-4">
+                    <div className="w-20 h-20 bg-slate-50 rounded-2xl border border-dashed border-slate-200 flex items-center justify-center overflow-hidden">
+                      {newWallet.qrCodeUrl ? (
+                        <img src={newWallet.qrCodeUrl} alt="QR" className="w-full h-full object-cover" />
+                      ) : (
+                        <QrCode size={24} className="text-slate-300" />
+                      )}
+                    </div>
+                    <div className="flex-1">
+                      <label className="flex items-center justify-center gap-2 px-4 py-3 bg-white border border-slate-200 rounded-2xl cursor-pointer hover:bg-slate-50 transition-all font-bold text-sm text-slate-600">
+                        <Upload size={18} />
+                        {uploading ? 'Uploading...' : 'Upload QR Code'}
+                        <input type="file" className="hidden" accept="image/*" onChange={handleFileUpload} disabled={uploading} />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-8 bg-slate-50/50 flex gap-3">
+                <button 
+                  onClick={() => setShowWalletModal(false)}
+                  className="flex-1 bg-white border border-slate-200 text-slate-700 font-bold py-4 rounded-2xl hover:bg-slate-50 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={handleAddWallet}
+                  className="flex-1 bg-indigo-600 text-white font-bold py-4 rounded-2xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+                >
+                  {editingWallet ? 'Update Wallet' : 'Add Wallet'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -701,6 +938,35 @@ const DeviceSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
   const [showAddNetwork, setShowAddNetwork] = useState(false);
   const [networkIp, setNetworkIp] = useState('');
   const [printerName, setPrinterName] = useState('');
+  const [settings, setSettings] = useState<any>(null);
+
+  useEffect(() => {
+    const savedPrinters = localStorage.getItem('pos_printers');
+    if (savedPrinters) setPrinters(JSON.parse(savedPrinters));
+    
+    const loadSettings = async () => {
+      try {
+        const data = await posService.getSettings();
+        setSettings(data);
+      } catch (error) {
+        console.error('Failed to load settings:', error);
+      }
+    };
+    loadSettings();
+  }, []);
+
+  const setDefaultPrinter = async (printerId: string) => {
+    try {
+      await posService.updateSettings({
+        ...settings,
+        default_bill_printer_id: printerId
+      });
+      setSettings({ ...settings, default_bill_printer_id: printerId });
+      toast.success('Default bill printer updated');
+    } catch (error) {
+      toast.error('Failed to update default printer');
+    }
+  };
 
   // Mock session data
   const [sessions] = useState([
@@ -874,6 +1140,17 @@ const DeviceSettings: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                   <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">
                     {printer.status}
                   </span>
+                  <button 
+                    onClick={() => setDefaultPrinter(printer.id)}
+                    className={cn(
+                      "px-3 py-1 rounded-lg text-xs font-bold transition-all",
+                      settings?.default_bill_printer_id === printer.id 
+                        ? "bg-indigo-600 text-white shadow-md" 
+                        : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+                    )}
+                  >
+                    {settings?.default_bill_printer_id === printer.id ? 'Default' : 'Set Default'}
+                  </button>
                   <button 
                     onClick={() => removePrinter(printer.id)}
                     className="p-2 text-slate-300 hover:text-rose-500 transition-colors"

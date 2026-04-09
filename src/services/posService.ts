@@ -1,4 +1,4 @@
-import { Product, Category, Sale, SaleItem, InventoryItem, Recipe, Account, Branch, Customer, AccountTransaction, Warehouse, User } from '../types';
+import { Product, Category, Sale, SaleItem, InventoryItem, Recipe, Account, Branch, Customer, AccountTransaction, Warehouse, User, Settings, CryptoWallet } from '../types';
 
 const API_URL = '/api';
 
@@ -123,16 +123,59 @@ export const posService = {
     });
   },
 
+  voidSale: async (id: string) => {
+    return apiFetch(`/index.php?action=void_sale&id=${id}`, {
+      method: 'POST',
+    });
+  },
+
+  deleteSale: async (id: string) => {
+    return apiFetch(`/index.php?action=delete_sale&id=${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  getSales: async (): Promise<Sale[]> => {
+    const data = await apiFetch('/index.php?action=sales');
+    return data.map((s: any) => ({
+      id: s.id.toString(),
+      orderNumber: s.order_number,
+      total: parseFloat(s.grand_total) || 0,
+      subtotal: parseFloat(s.subtotal) || 0,
+      tax: parseFloat(s.tax_amount || 0) || 0,
+      paymentMethod: s.payment_method,
+      timestamp: { toDate: () => new Date(s.created_at) },
+      status: s.status,
+      branch_id: s.branch_id,
+      items: s.items ? s.items.map((item: any) => ({
+        productId: item.product_id.toString(),
+        name: item.name,
+        price: parseFloat(item.unit_price),
+        quantity: parseInt(item.quantity),
+        tags: item.tags ? JSON.parse(item.tags) : []
+      })) : []
+    }));
+  },
+
   subscribeToSales: (callback: (sales: Sale[]) => void, onError?: (error: any) => void) => {
     return poll('/index.php?action=sales', (data) => {
       const mapped = data.map((s: any) => ({
         id: s.id.toString(),
+        orderNumber: s.order_number,
         total: parseFloat(s.grand_total) || 0,
         subtotal: parseFloat(s.subtotal) || 0,
         tax: parseFloat(s.tax_amount || 0) || 0,
         paymentMethod: s.payment_method,
         timestamp: { toDate: () => new Date(s.created_at) },
-        items: []
+        status: s.status,
+        branch_id: s.branch_id,
+        items: s.items ? s.items.map((item: any) => ({
+          productId: item.product_id.toString(),
+          name: item.name,
+          price: parseFloat(item.unit_price),
+          quantity: parseInt(item.quantity),
+          tags: item.tags ? JSON.parse(item.tags) : []
+        })) : []
       }));
       callback(mapped);
     });
@@ -237,8 +280,9 @@ export const posService = {
   },
 
   // Accounts
-  subscribeToAccounts: (callback: (accounts: Account[]) => void, onError?: (error: any) => void) => {
-    return poll('/index.php?action=accounts', (data) => {
+  subscribeToAccounts: (callback: (accounts: Account[]) => void, branchId?: string, onError?: (error: any) => void) => {
+    const url = branchId ? `/index.php?action=accounts&branchId=${branchId}` : '/index.php?action=accounts';
+    return poll(url, (data) => {
       const mapped = data.map((a: any) => ({
         id: a.id.toString(),
         branch_id: a.branch_id.toString(),
@@ -257,6 +301,19 @@ export const posService = {
     });
   },
 
+  deleteAccount: async (id: string) => {
+    return apiFetch(`/index.php?action=delete_account&id=${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  updateAccountBalance: async (id: string, balance: number) => {
+    return apiFetch(`/index.php?action=update_account_balance&id=${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ balance }),
+    });
+  },
+
   // Branches
   subscribeToBranches: (callback: (branches: Branch[]) => void, onError?: (error: any) => void) => {
     return poll('/index.php?action=branches', (data) => {
@@ -266,7 +323,8 @@ export const posService = {
         address: b.address,
         phone: b.phone,
         email: b.email,
-        isActive: b.is_active === 1
+        isActive: b.is_active === 1,
+        receiptTemplate: b.receipt_template
       }));
       callback(mapped);
     });
@@ -506,5 +564,50 @@ export const posService = {
       method: 'POST',
       body: JSON.stringify(settings),
     });
+  },
+
+  // Crypto Wallets
+  subscribeToCryptoWallets: (callback: (wallets: CryptoWallet[]) => void) => {
+    return poll('/index.php?action=crypto_wallets', (data) => {
+      const mapped = data.map((w: any) => ({
+        id: w.id.toString(),
+        name: w.name,
+        network: w.network,
+        address: w.address,
+        qrCodeUrl: w.qr_code_url
+      }));
+      callback(mapped);
+    });
+  },
+
+  addCryptoWallet: async (wallet: Omit<CryptoWallet, 'id'>) => {
+    return apiFetch('/index.php?action=crypto_wallets', {
+      method: 'POST',
+      body: JSON.stringify(wallet),
+    });
+  },
+
+  updateCryptoWallet: async (id: string, data: Partial<CryptoWallet>) => {
+    return apiFetch(`/index.php?action=update_crypto_wallet&id=${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  },
+
+  deleteCryptoWallet: async (id: string) => {
+    return apiFetch(`/index.php?action=delete_crypto_wallet&id=${id}`, {
+      method: 'DELETE',
+    });
+  },
+
+  uploadQrCode: async (file: File) => {
+    const formData = new FormData();
+    formData.append('qr_code', file);
+    const response = await fetch(`${API_URL}/index.php?action=upload_qr`, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) throw new Error('Failed to upload QR code');
+    return response.json();
   }
 };

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Branch } from '../types';
 import { posService } from '../services/posService';
+import { DEFAULT_RECEIPT_TEMPLATE } from '../constants';
 import { 
   Plus, 
   Building2, 
@@ -35,7 +36,8 @@ const Branches: React.FC = () => {
     address: '', 
     phone: '', 
     email: '', 
-    isActive: true 
+    isActive: true,
+    receiptTemplate: ''
   });
 
   const isAdmin = user?.role === 'admin';
@@ -76,9 +78,12 @@ const Branches: React.FC = () => {
       return;
     }
     try {
-      await posService.addBranch(newBranch);
+      await posService.addBranch({
+        ...newBranch,
+        receiptTemplate: newBranch.receiptTemplate || DEFAULT_RECEIPT_TEMPLATE
+      });
       setIsAddingBranch(false);
-      setNewBranch({ name: '', address: '', phone: '', email: '', isActive: true });
+      setNewBranch({ name: '', address: '', phone: '', email: '', isActive: true, receiptTemplate: '' });
       toast.success('Branch added successfully');
     } catch (error) {
       toast.error('Failed to add branch');
@@ -331,6 +336,19 @@ const Branches: React.FC = () => {
                     />
                   </div>
                 </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Receipt Template (HTML)</label>
+                  <textarea 
+                    value={editingBranch ? editingBranch.receiptTemplate : newBranch.receiptTemplate} 
+                    onChange={e => editingBranch
+                      ? setEditingBranch({...editingBranch, receiptTemplate: e.target.value})
+                      : setNewBranch({...newBranch, receiptTemplate: e.target.value})
+                    } 
+                    placeholder="Leave empty to use default template. Use {{companyName}}, {{branchName}}, {{items}}, etc."
+                    className="w-full px-4 py-2 bg-slate-50 rounded-xl border-none focus:ring-2 focus:ring-indigo-500 font-mono text-xs" 
+                    rows={6} 
+                  />
+                </div>
                 {editingBranch && (
                   <div className="flex items-center gap-2 py-2">
                     <input 
@@ -377,98 +395,38 @@ const Branches: React.FC = () => {
               <div className="flex-1 overflow-y-auto pr-2">
                 <div className="bg-slate-50 rounded-2xl p-6 border-2 border-dashed border-slate-200">
                   {/* Receipt Content */}
-                  <div className="bg-white shadow-sm mx-auto max-w-[300px] p-6 text-slate-800 font-mono text-sm space-y-4">
-                    {/* Header */}
-                    <div className="text-center space-y-1 border-b border-dashed border-slate-200 pb-4">
-                      <h3 className="font-bold text-lg uppercase">{settings?.company_name || 'Company Name'}</h3>
-                      <p className="font-bold">{viewingReceiptBranch.name}</p>
-                      <p className="text-[10px] leading-tight">{viewingReceiptBranch.address}</p>
-                      <p className="text-[10px]">Tel: {viewingReceiptBranch.phone}</p>
-                      <p className="text-[10px]">{viewingReceiptBranch.email}</p>
-                      {settings?.company_trn && (
-                        <p className="text-[10px] font-bold mt-1">TRN: {settings.company_trn}</p>
-                      )}
-                    </div>
-
-                    {/* Meta */}
-                    <div className="text-[10px] space-y-0.5">
-                      <div className="flex justify-between">
-                        <span>Date:</span>
-                        <span>{new Date().toLocaleDateString()}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Time:</span>
-                        <span>{new Date().toLocaleTimeString()}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Order:</span>
-                        <span>ORD-123456789</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>Cashier:</span>
-                        <span>{user?.name || 'Admin'}</span>
-                      </div>
-                    </div>
-
-                    {/* Body */}
-                    <div className="border-y border-dashed border-slate-200 py-2 space-y-1">
-                      <div className="flex justify-between font-bold text-[10px]">
-                        <span className="w-1/2">Item</span>
-                        <span className="w-1/6 text-center">Qty</span>
-                        <span className="w-1/3 text-right">Total</span>
-                      </div>
-                      <div className="flex justify-between text-[10px]">
-                        <span className="w-1/2">Sample Product A</span>
-                        <span className="w-1/6 text-center">2</span>
-                        <span className="w-1/3 text-right">20.00</span>
-                      </div>
-                      <div className="flex justify-between text-[10px]">
-                        <span className="w-1/2">Sample Product B</span>
-                        <span className="w-1/6 text-center">1</span>
-                        <span className="w-1/3 text-right">15.00</span>
-                      </div>
-                    </div>
-
-                    {/* Totals */}
-                    <div className="space-y-1 pt-2">
-                      <div className="flex justify-between text-[10px]">
-                        <span>Subtotal:</span>
-                        <span>35.00</span>
-                      </div>
-                      <div className="flex justify-between text-[10px]">
-                        <span>Tax ({settings?.tax_percentage || 0}%):</span>
-                        <span>{(35 * (settings?.tax_percentage || 0) / 100).toFixed(2)}</span>
-                      </div>
-                      {settings?.service_charge > 0 && (
-                        <div className="flex justify-between text-[10px]">
-                          <span>Service Charge ({settings.service_charge}%):</span>
-                          <span>{(35 * settings.service_charge / 100).toFixed(2)}</span>
-                        </div>
-                      )}
-                      <div className="flex justify-between font-bold text-base pt-1 border-t border-slate-100">
-                        <span>TOTAL:</span>
-                        <span>{(35 * (1 + (settings?.tax_percentage || 0) / 100 + (settings?.service_charge || 0) / 100)).toFixed(2)}</span>
-                      </div>
-                    </div>
-
-                    {/* Payment */}
-                    <div className="text-[10px] pt-2">
-                      <div className="flex justify-between">
-                        <span>Payment Method:</span>
-                        <span className="font-bold">CASH</span>
-                      </div>
-                    </div>
-
-                    {/* Footer */}
-                    <div className="text-center space-y-2 pt-4 border-t border-dashed border-slate-200">
-                      <p className="text-[10px] font-bold italic">Thank you for your business!</p>
-                      <div className="bg-slate-50 p-2 rounded-lg">
-                        <p className="text-[9px]">Customer Loyalty Points</p>
-                        <p className="text-xs font-bold">Current Balance: 150 pts</p>
-                      </div>
-                      <p className="text-[8px] text-slate-400">Powered by Ace POS</p>
-                    </div>
-                  </div>
+                  <div 
+                    className="bg-white shadow-sm mx-auto w-[80mm] p-0 text-slate-800 overflow-hidden"
+                    dangerouslySetInnerHTML={{ 
+                      __html: (viewingReceiptBranch.receiptTemplate || DEFAULT_RECEIPT_TEMPLATE)
+                        .replace('{{companyName}}', settings?.company_name || 'Company Name')
+                        .replace('{{branchName}}', viewingReceiptBranch.name)
+                        .replace('{{branchAddress}}', viewingReceiptBranch.address || '')
+                        .replace('{{branchPhone}}', viewingReceiptBranch.phone || '')
+                        .replace('{{orderNumber}}', 'ORD-123456789')
+                        .replace('{{date}}', new Date().toLocaleString())
+                        .replace('{{cashierName}}', user?.name || 'Admin')
+                        .replace('{{subtotal}}', '35.00')
+                        .replace('{{tax}}', (35 * (settings?.tax_percentage || 0) / 100).toFixed(2))
+                        .replace('{{taxPercentage}}', (settings?.tax_percentage || 0).toString())
+                        .replace('{{serviceCharge}}', (35 * (settings?.service_charge || 0) / 100).toFixed(2))
+                        .replace('{{serviceChargePercentage}}', (settings?.service_charge || 0).toString())
+                        .replace('{{total}}', (35 * (1 + (settings?.tax_percentage || 0) / 100 + (settings?.service_charge || 0) / 100)).toFixed(2))
+                        .replace('{{paymentMethod}}', 'CASH')
+                        .replace('{{items}}', `
+                          <tr>
+                            <td style="padding: 2px 0;">Sample Product A</td>
+                            <td style="text-align: center;">2</td>
+                            <td style="text-align: right;">20.00</td>
+                          </tr>
+                          <tr>
+                            <td style="padding: 2px 0;">Sample Product B</td>
+                            <td style="text-align: center;">1</td>
+                            <td style="text-align: right;">15.00</td>
+                          </tr>
+                        `)
+                    }} 
+                  />
                 </div>
               </div>
 

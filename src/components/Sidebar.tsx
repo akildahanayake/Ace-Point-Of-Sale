@@ -15,25 +15,30 @@ import {
 import { cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
 
+import { useApp } from '../context/AppContext';
+
 interface SidebarProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
+  const { user } = useApp();
   const [isOpen, setIsOpen] = useState(true);
 
   const menuItems = [
-    { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
-    { id: 'pos', icon: ShoppingCart, label: 'Point of Sale' },
-    { id: 'branches', icon: Building2, label: 'Branches' },
-    { id: 'inventory', icon: Package, label: 'Inventory' },
-    { id: 'accounts', icon: Wallet, label: 'Accounts' },
-    { id: 'customers', icon: Users, label: 'Customers' },
-    { id: 'reports', icon: BarChart3, label: 'Reports' },
-    { id: 'users', icon: Users, label: 'Users' },
-    { id: 'settings', icon: Settings, label: 'Settings' },
+    { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard', roles: ['admin', 'manager'] },
+    { id: 'pos', icon: ShoppingCart, label: 'Point of Sale', roles: ['admin', 'manager', 'cashier', 'waiter'] },
+    { id: 'branches', icon: Building2, label: 'Branches', roles: ['admin'] },
+    { id: 'inventory', icon: Package, label: 'Inventory', roles: ['admin', 'manager'] },
+    { id: 'accounts', icon: Wallet, label: 'Accounts', roles: ['admin', 'manager'] },
+    { id: 'customers', icon: Users, label: 'Customers', roles: ['admin', 'manager', 'cashier', 'waiter'] },
+    { id: 'reports', icon: BarChart3, label: 'Reports', roles: ['admin', 'manager'] },
+    { id: 'users', icon: Users, label: 'Users', roles: ['admin'] },
+    { id: 'settings', icon: Settings, label: 'Settings', roles: ['admin'] },
   ];
+
+  const filteredItems = menuItems.filter(item => item.roles.includes(user?.role || ''));
 
   return (
     <>
@@ -75,7 +80,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
         </div>
 
         <nav className="flex-1 px-3 space-y-2 mt-4">
-          {menuItems.map((item) => (
+          {filteredItems.map((item) => (
             <button
               key={item.id}
               onClick={() => setActiveTab(item.id)}

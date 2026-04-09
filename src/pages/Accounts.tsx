@@ -10,7 +10,8 @@ import {
   Search,
   Loader2,
   X,
-  Calendar
+  Calendar,
+  Trash2
 } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import { motion, AnimatePresence } from 'motion/react';
@@ -18,12 +19,15 @@ import { toast } from 'sonner';
 import { useApp } from '../context/AppContext';
 
 const Accounts: React.FC = () => {
-  const { currentBranch } = useApp();
+  const { currentBranch, user } = useApp();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [transactions, setTransactions] = useState<AccountTransaction[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
   const [isAddingAccount, setIsAddingAccount] = useState(false);
+  const [isEditingBalance, setIsEditingBalance] = useState<Account | null>(null);
+  const [editBalanceValue, setEditBalanceValue] = useState<number>(0);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null);
   const [newAccount, setNewAccount] = useState({ name: '', type: 'cash' as const, balance: 0 });
 
   useEffect(() => {
@@ -33,13 +37,13 @@ const Accounts: React.FC = () => {
         setSelectedAccount(data[0]);
       }
       setLoading(false);
-    }, (error) => {
+    }, currentBranch?.id, (error) => {
       console.error(error);
       setLoading(false);
       toast.error('Failed to load accounts');
     });
     return () => unsub();
-  }, []);
+  }, [currentBranch]);
 
   useEffect(() => {
     if (selectedAccount) {
@@ -53,6 +57,10 @@ const Accounts: React.FC = () => {
 
   const handleAddAccount = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (user?.role !== 'admin') {
+      toast.error('Only admins can create accounts');
+      return;
+    }
     if (!currentBranch) {
       toast.error('Please select a branch first');
       return;
@@ -72,6 +80,39 @@ const Accounts: React.FC = () => {
     }
   };
 
+  const handleDeleteAccount = async (id: string) => {
+    try {
+      await posService.deleteAccount(id);
+      toast.success('Account deleted successfully');
+      setShowDeleteConfirm(null);
+      if (selectedAccount?.id === id) {
+        setSelectedAccount(null);
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to delete account');
+    }
+  };
+
+  const handleUpdateBalance = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isEditingBalance) return;
+    try {
+      await posService.updateAccountBalance(isEditingBalance.id, editBalanceValue);
+      toast.success('Balance updated successfully');
+      setIsEditingBalance(null);
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to update balance');
+    }
+  };
+
+  const groupedAccounts = {
+    cash: accounts.filter(a => a.type === 'cash'),
+    card: accounts.filter(a => a.type === 'card' || a.type === 'bank'),
+    wallet: accounts.filter(a => a.type === 'wallet')
+  };
+
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -87,50 +128,88 @@ const Accounts: React.FC = () => {
           <h1 className="text-3xl font-bold text-slate-800">Accounts & Finance</h1>
           <p className="text-slate-500">Manage your cash, bank accounts and transactions</p>
         </div>
-        <button 
-          onClick={() => setIsAddingAccount(true)}
-          className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 transition-all font-bold shadow-lg shadow-indigo-200"
-        >
-          <Plus size={20} />
-          New Account
-        </button>
+        {user?.role === 'admin' && (
+          <button 
+            onClick={() => setIsAddingAccount(true)}
+            className="flex items-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 transition-all font-bold shadow-lg shadow-indigo-200"
+          >
+            <Plus size={20} />
+            New Account
+          </button>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {accounts.map(account => (
-          <motion.div 
-            key={account.id}
-            whileHover={{ y: -4 }}
-            onClick={() => setSelectedAccount(account)}
-            className={cn(
-              "bg-white p-8 rounded-[32px] shadow-sm border-2 relative overflow-hidden group cursor-pointer transition-all",
-              selectedAccount?.id === account.id ? "border-indigo-600 shadow-indigo-100" : "border-slate-100 hover:border-slate-200"
-            )}
-          >
-            <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
-              <Wallet size={80} />
-            </div>
-            
-            <div className="flex items-center gap-3 mb-6">
-              <div className={cn(
-                "p-3 rounded-2xl",
-                account.type === 'cash' ? "bg-emerald-50 text-emerald-600" : "bg-indigo-50 text-indigo-600"
-              )}>
-                <Wallet size={24} />
-              </div>
-              <span className="text-sm font-bold text-slate-400 uppercase tracking-wider">{account.type}</span>
-            </div>
+      <div className="space-y-12">
+        {Object.entries(groupedAccounts).map(([type, typeAccounts]) => typeAccounts.length > 0 && (
+          <div key={type} className="space-y-6">
+            <h2 className="text-xl font-bold text-slate-800 capitalize flex items-center gap-2">
+              <div className="w-2 h-6 bg-indigo-600 rounded-full" />
+              {type} Accounts
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {typeAccounts.map(account => (
+                <motion.div 
+                  key={account.id}
+                  whileHover={{ y: -4 }}
+                  onClick={() => setSelectedAccount(account)}
+                  className={cn(
+                    "bg-white p-8 rounded-[32px] shadow-sm border-2 relative overflow-hidden group cursor-pointer transition-all",
+                    selectedAccount?.id === account.id ? "border-indigo-600 shadow-indigo-100" : "border-slate-100 hover:border-slate-200"
+                  )}
+                >
+                  <div className="absolute top-0 right-0 p-6 opacity-10 group-hover:opacity-20 transition-opacity">
+                    <Wallet size={80} />
+                  </div>
+                  
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className={cn(
+                      "p-3 rounded-2xl",
+                      account.type === 'cash' ? "bg-emerald-50 text-emerald-600" : 
+                      account.type === 'wallet' ? "bg-amber-50 text-amber-600" :
+                      "bg-indigo-50 text-indigo-600"
+                    )}>
+                      <Wallet size={24} />
+                    </div>
+                    <span className="text-sm font-bold text-slate-400 uppercase tracking-wider">{account.type}</span>
+                  </div>
 
-            <h3 className="text-xl font-bold text-slate-800 mb-1">{account.name}</h3>
-            <p className="text-3xl font-black text-indigo-600">{formatCurrency(account.balance)}</p>
+                  <h3 className="text-xl font-bold text-slate-800 mb-1">{account.name}</h3>
+                  <p className="text-3xl font-black text-indigo-600">{formatCurrency(account.balance)}</p>
 
-            <div className="mt-8 flex gap-2">
-              <button className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-100 transition-colors flex items-center justify-center gap-2">
-                <History size={16} />
-                History
-              </button>
+                  <div className="mt-8 flex gap-2">
+                    <button className="flex-1 py-3 bg-slate-50 text-slate-600 rounded-xl font-bold text-sm hover:bg-slate-100 transition-colors flex items-center justify-center gap-2">
+                      <History size={16} />
+                      History
+                    </button>
+                    {user?.role === 'admin' && (
+                      <>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsEditingBalance(account);
+                            setEditBalanceValue(account.balance);
+                          }}
+                          className="p-3 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-100 transition-colors"
+                          title="Edit Balance"
+                        >
+                          <Plus size={16} />
+                        </button>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowDeleteConfirm(account.id);
+                          }}
+                          className="p-3 bg-rose-50 text-rose-600 rounded-xl hover:bg-rose-100 transition-colors"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </motion.div>
+              ))}
             </div>
-          </motion.div>
+          </div>
         ))}
       </div>
 
@@ -195,6 +274,41 @@ const Accounts: React.FC = () => {
       </div>
 
       <AnimatePresence>
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[40px] p-10 w-full max-w-md shadow-2xl text-center"
+            >
+              <div className="w-20 h-20 bg-rose-50 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                <Trash2 size={40} />
+              </div>
+              <h3 className="text-2xl font-bold text-slate-800 mb-2">Delete Account?</h3>
+              <p className="text-slate-500 mb-8">
+                Are you sure you want to delete this account? All transaction history for this account will be permanently removed.
+              </p>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowDeleteConfirm(null)}
+                  className="flex-1 px-6 py-4 bg-slate-100 text-slate-600 font-bold rounded-2xl hover:bg-slate-200 transition-all"
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => handleDeleteAccount(showDeleteConfirm)}
+                  className="flex-1 px-6 py-4 bg-rose-600 text-white font-bold rounded-2xl hover:bg-rose-700 transition-all"
+                >
+                  Delete Now
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {isAddingAccount && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
             <motion.div 
@@ -223,7 +337,7 @@ const Accounts: React.FC = () => {
                 </div>
                 <div>
                   <label className="block text-sm font-bold text-slate-700 mb-2">Account Type</label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-3 gap-3">
                     <button
                       type="button"
                       onClick={() => setNewAccount({...newAccount, type: 'cash'})}
@@ -236,13 +350,23 @@ const Accounts: React.FC = () => {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setNewAccount({...newAccount, type: 'bank'})}
+                      onClick={() => setNewAccount({...newAccount, type: 'card'})}
                       className={cn(
                         "py-4 rounded-2xl font-bold border-2 transition-all",
-                        newAccount.type === 'bank' ? "border-indigo-600 bg-indigo-50 text-indigo-600" : "border-slate-100 text-slate-500 hover:border-slate-200"
+                        newAccount.type === 'card' ? "border-indigo-600 bg-indigo-50 text-indigo-600" : "border-slate-100 text-slate-500 hover:border-slate-200"
                       )}
                     >
-                      Bank
+                      Card
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewAccount({...newAccount, type: 'wallet'})}
+                      className={cn(
+                        "py-4 rounded-2xl font-bold border-2 transition-all",
+                        newAccount.type === 'wallet' ? "border-indigo-600 bg-indigo-50 text-indigo-600" : "border-slate-100 text-slate-500 hover:border-slate-200"
+                      )}
+                    >
+                      Wallet
                     </button>
                   </div>
                 </div>
@@ -262,6 +386,44 @@ const Accounts: React.FC = () => {
                   className="w-full bg-indigo-600 text-white font-bold py-5 rounded-2xl hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 mt-4 text-lg"
                 >
                   Create Account
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {isEditingBalance && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-[40px] p-10 w-full max-w-md shadow-2xl"
+            >
+              <div className="flex justify-between items-center mb-8">
+                <h2 className="text-2xl font-black text-slate-800">Edit Balance</h2>
+                <button onClick={() => setIsEditingBalance(null)} className="p-2 hover:bg-slate-100 rounded-full">
+                  <X size={24} />
+                </button>
+              </div>
+              <form onSubmit={handleUpdateBalance} className="space-y-6">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Account: {isEditingBalance.name}</label>
+                  <input 
+                    required
+                    type="number" 
+                    step="0.01"
+                    value={editBalanceValue}
+                    onChange={e => setEditBalanceValue(parseFloat(e.target.value))}
+                    className="w-full px-5 py-4 bg-slate-50 rounded-2xl border-none focus:ring-2 focus:ring-indigo-500 text-lg font-bold text-indigo-600"
+                  />
+                </div>
+                <button 
+                  type="submit"
+                  className="w-full bg-indigo-600 text-white font-bold py-5 rounded-2xl hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-200 mt-4 text-lg"
+                >
+                  Update Balance
                 </button>
               </form>
             </motion.div>
